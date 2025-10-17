@@ -188,7 +188,7 @@ jq --version
 
 1. Clone the repository:
 ```bash
-git clone https://github.com/yourusername/postgres-sync-tool.git
+git clone https://github.com/Asimatasert/sync_database.git
 cd postgres-sync-tool
 ```
 
