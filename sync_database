@@ -14,6 +14,7 @@ EXCLUDE_TABLES=""
 EXCLUDE_SCHEMAS=""
 AUTO_RESTORE=false
 KEEP_DUMPS=0  # 0 means keep all dumps
+LOCAL_CLONE=false  # Clone database on localhost without SSH
 
 # Compression settings
 COMPRESSION_ENABLED=true
@@ -136,6 +137,11 @@ while [[ $# -gt 0 ]]; do
             KEEP_DUMPS="$2"
             shift 2
             ;;
+        --local-clone)
+            LOCAL_CLONE=true
+            AUTO_RESTORE=true
+            shift 1
+            ;;
         --help)
             echo "Usage: bash sync_database [OPTIONS]"
             echo ""
@@ -144,9 +150,12 @@ while [[ $# -gt 0 ]]; do
             echo "  --exclude TABLES           Comma-separated list of tables to exclude"
             echo "  --exclude-schema SCHEMAS   Comma-separated list of schemas to exclude"
             echo ""
-            echo "Remote Server Options (SSH connection):"
+            echo "Mode Options:"
+            echo "  --local-clone              Clone database on localhost (no SSH needed)"
+            echo ""
+            echo "Remote Server Options (SSH connection, not needed for --local-clone):"
             echo "  --remote-user USER         SSH username (default: your_ssh_user)"
-            echo "  --remote-ip IP             SSH server IP (required)"
+            echo "  --remote-ip IP             SSH server IP (required for remote sync)"
             echo "  --remote-port PORT         SSH port (default: 22)"
             echo ""
             echo "Source Database Options (where to dump from):"
@@ -192,6 +201,16 @@ while [[ $# -gt 0 ]]; do
             echo "  bash sync_database --database mydb \\"
             echo "    --source-password secret --remote-ip 192.168.1.100 \\"
             echo "    --exclude logs,sessions --restore --dest-password localpass"
+            echo ""
+            echo "  # Clone database on localhost (no SSH)"
+            echo "  bash sync_database --local-clone \\"
+            echo "    --database mydb --source-password secret \\"
+            echo "    --dest-database mydb_clone --dest-password secret"
+            echo ""
+            echo "  # Clone with different users"
+            echo "  bash sync_database --local-clone \\"
+            echo "    --database proddb --source-user admin --source-password secret \\"
+            echo "    --dest-database testdb --dest-user testuser --dest-password testpass"
             exit 0
             ;;
         *)
@@ -208,8 +227,8 @@ if [ -z "$SOURCE_DB_PASSWORD" ]; then
     exit 1
 fi
 
-if [ -z "$REMOTE_HOST" ]; then
-    echo -e "${RED}Error: --remote-ip is required${NC}"
+if [ "$LOCAL_CLONE" = false ] && [ -z "$REMOTE_HOST" ]; then
+    echo -e "${RED}Error: --remote-ip is required (or use --local-clone for localhost cloning)${NC}"
     exit 1
 fi
 
@@ -221,6 +240,28 @@ fi
 # Set destination database name to source if not specified
 if [ -z "$DEST_DB_NAME" ]; then
     DEST_DB_NAME="$DATABASE"
+fi
+
+# Validate local clone constraints
+if [ "$LOCAL_CLONE" = true ]; then
+    if [ "$DATABASE" = "$DEST_DB_NAME" ]; then
+        echo -e "${RED}Error: In local clone mode, source and destination database names cannot be the same${NC}"
+        echo "Source: $DATABASE"
+        echo "Destination: $DEST_DB_NAME"
+        echo "Use --dest-database to specify a different name for the cloned database"
+        exit 1
+    fi
+
+    # If ports are the same, use same credentials (same cluster)
+    if [ "$SOURCE_DB_PORT" = "$DEST_DB_PORT" ] && [ "$SOURCE_DB_HOST" = "$DEST_DB_HOST" ]; then
+        # Same cluster - use source credentials for destination if not specified
+        if [ -z "$DEST_DB_USER" ] || [ "$DEST_DB_USER" = "postgres" ]; then
+            DEST_DB_USER="$SOURCE_DB_USER"
+        fi
+        if [ -z "$DEST_DB_PASSWORD" ]; then
+            DEST_DB_PASSWORD="$SOURCE_DB_PASSWORD"
+        fi
+    fi
 fi
 
 # Create local dump directory if it doesn't exist
@@ -261,10 +302,20 @@ case "$COMPRESSION_TYPE" in
         ;;
 esac
 
-echo -e "${GREEN}=== Database Sync Started ===${NC}"
+if [ "$LOCAL_CLONE" = true ]; then
+    echo -e "${GREEN}=== PostgreSQL Local Clone Started ===${NC}"
+    echo "Mode: Local Clone (No SSH)"
+else
+    echo -e "${GREEN}=== PostgreSQL Database Sync Started ===${NC}"
+fi
+
 echo "Source Database: $DATABASE"
 echo "Source DB: ${SOURCE_DB_HOST}:${SOURCE_DB_PORT} (user: ${SOURCE_DB_USER})"
-echo "Remote SSH: ${REMOTE_USER}@${REMOTE_HOST}:${REMOTE_PORT}"
+
+if [ "$LOCAL_CLONE" = false ]; then
+    echo "Remote SSH: ${REMOTE_USER}@${REMOTE_HOST}:${REMOTE_PORT}"
+fi
+
 if [ "$AUTO_RESTORE" = true ]; then
     echo "Destination Database: $DEST_DB_NAME"
     echo "Destination DB: ${DEST_DB_HOST}:${DEST_DB_PORT} (user: ${DEST_DB_USER})"
@@ -275,8 +326,11 @@ fi
 if [ -n "$EXCLUDE_SCHEMAS" ]; then
     echo "Excluding schemas: $EXCLUDE_SCHEMAS"
 fi
-if [ "$COMPRESSION_ENABLED" = true ]; then
+if [ "$COMPRESSION_ENABLED" = true ] && [ "$LOCAL_CLONE" = false ]; then
     echo "Compression: ${COMPRESSION_TYPE} (level: ${COMPRESSION_LEVEL}, pg_dump: ${PG_DUMP_COMPRESSION})"
+elif [ "$LOCAL_CLONE" = true ]; then
+    echo "Compression: disabled (local clone mode)"
+    COMPRESSION_ENABLED=false
 else
     echo "Compression: disabled"
 fi
@@ -286,7 +340,13 @@ echo ""
 # -Fc: Custom format
 # -Z: Compression level for custom format
 # -v: Verbose
-PG_DUMP_CMD="PGPASSWORD='$SOURCE_DB_PASSWORD' pg_dump -U $SOURCE_DB_USER -h $SOURCE_DB_HOST -p $SOURCE_DB_PORT -Fc -Z${PG_DUMP_COMPRESSION} -v -f $REMOTE_DUMP_PATH $DATABASE"
+if [ "$LOCAL_CLONE" = true ]; then
+    DUMP_PATH="$LOCAL_DUMP_PATH"
+else
+    DUMP_PATH="$REMOTE_DUMP_PATH"
+fi
+
+PG_DUMP_CMD="PGPASSWORD='$SOURCE_DB_PASSWORD' pg_dump -U $SOURCE_DB_USER -h $SOURCE_DB_HOST -p $SOURCE_DB_PORT -Fc -Z${PG_DUMP_COMPRESSION} -v -f $DUMP_PATH $DATABASE"
 
 # Add exclude-table options
 if [ -n "$EXCLUDE_TABLES" ]; then
@@ -308,8 +368,13 @@ if [ -n "$EXCLUDE_SCHEMAS" ]; then
     done
 fi
 
-echo -e "${YELLOW}Step 1/5: Creating database dump on remote server...${NC}"
-ssh -p ${REMOTE_PORT} ${REMOTE_USER}@${REMOTE_HOST} "$PG_DUMP_CMD"
+if [ "$LOCAL_CLONE" = true ]; then
+    echo -e "${YELLOW}Step 1/3: Creating database dump locally...${NC}"
+    eval "$PG_DUMP_CMD"
+else
+    echo -e "${YELLOW}Step 1/5: Creating database dump on remote server...${NC}"
+    ssh -p ${REMOTE_PORT} ${REMOTE_USER}@${REMOTE_HOST} "$PG_DUMP_CMD"
+fi
 
 if [ $? -eq 0 ]; then
     echo -e "${GREEN}✓ Database dump created successfully${NC}"
@@ -318,88 +383,100 @@ else
     exit 1
 fi
 
-echo ""
-echo -e "${YELLOW}Step 2/5: Checking dump file size...${NC}"
-REMOTE_SIZE=$(ssh -p ${REMOTE_PORT} ${REMOTE_USER}@${REMOTE_HOST} "ls -lh $REMOTE_DUMP_PATH | awk '{print \$5}'")
-REMOTE_SIZE_BYTES=$(ssh -p ${REMOTE_PORT} ${REMOTE_USER}@${REMOTE_HOST} "stat -f%z $REMOTE_DUMP_PATH 2>/dev/null || stat -c%s $REMOTE_DUMP_PATH 2>/dev/null")
-echo -e "${GREEN}✓ Dump file size: ${REMOTE_SIZE}${NC}"
-
-# Compress on remote server if enabled
-if [ "$COMPRESSION_ENABLED" = true ]; then
+if [ "$LOCAL_CLONE" = false ]; then
     echo ""
-    echo -e "${YELLOW}Step 3/5: Compressing dump file on remote server...${NC}"
-    echo "Compression type: ${COMPRESSION_TYPE} (level: ${COMPRESSION_LEVEL})"
+    echo -e "${YELLOW}Step 2/5: Checking dump file size...${NC}"
+    REMOTE_SIZE=$(ssh -p ${REMOTE_PORT} ${REMOTE_USER}@${REMOTE_HOST} "ls -lh $REMOTE_DUMP_PATH | awk '{print \$5}'")
+    REMOTE_SIZE_BYTES=$(ssh -p ${REMOTE_PORT} ${REMOTE_USER}@${REMOTE_HOST} "stat -f%z $REMOTE_DUMP_PATH 2>/dev/null || stat -c%s $REMOTE_DUMP_PATH 2>/dev/null")
+    echo -e "${GREEN}✓ Dump file size: ${REMOTE_SIZE}${NC}"
 
-    ssh -p ${REMOTE_PORT} ${REMOTE_USER}@${REMOTE_HOST} "$COMPRESS_CMD $REMOTE_DUMP_PATH"
+    # Compress on remote server if enabled
+    if [ "$COMPRESSION_ENABLED" = true ]; then
+        echo ""
+        echo -e "${YELLOW}Step 3/5: Compressing dump file on remote server...${NC}"
+        echo "Compression type: ${COMPRESSION_TYPE} (level: ${COMPRESSION_LEVEL})"
 
-    if [ $? -eq 0 ]; then
-        # Update paths to include compression extension
-        REMOTE_DUMP_PATH="${REMOTE_DUMP_PATH}${COMPRESSION_EXT}"
-        LOCAL_DUMP_PATH="${LOCAL_DUMP_PATH}${COMPRESSION_EXT}"
+        ssh -p ${REMOTE_PORT} ${REMOTE_USER}@${REMOTE_HOST} "$COMPRESS_CMD $REMOTE_DUMP_PATH"
 
-        COMPRESSED_SIZE=$(ssh -p ${REMOTE_PORT} ${REMOTE_USER}@${REMOTE_HOST} "ls -lh $REMOTE_DUMP_PATH | awk '{print \$5}'")
-        COMPRESSED_SIZE_BYTES=$(ssh -p ${REMOTE_PORT} ${REMOTE_USER}@${REMOTE_HOST} "stat -f%z $REMOTE_DUMP_PATH 2>/dev/null || stat -c%s $REMOTE_DUMP_PATH 2>/dev/null")
+        if [ $? -eq 0 ]; then
+            # Update paths to include compression extension
+            REMOTE_DUMP_PATH="${REMOTE_DUMP_PATH}${COMPRESSION_EXT}"
+            LOCAL_DUMP_PATH="${LOCAL_DUMP_PATH}${COMPRESSION_EXT}"
 
-        # Calculate compression ratio
-        if [ -n "$REMOTE_SIZE_BYTES" ] && [ -n "$COMPRESSED_SIZE_BYTES" ]; then
-            COMPRESSION_RATIO=$(awk "BEGIN {printf \"%.1f\", ($REMOTE_SIZE_BYTES / $COMPRESSED_SIZE_BYTES)}")
-            SPACE_SAVED=$(awk "BEGIN {printf \"%.1f\", (($REMOTE_SIZE_BYTES - $COMPRESSED_SIZE_BYTES) / $REMOTE_SIZE_BYTES * 100)}")
-            echo -e "${GREEN}✓ Compressed size: ${COMPRESSED_SIZE} (ratio: ${COMPRESSION_RATIO}x, saved: ${SPACE_SAVED}%)${NC}"
+            COMPRESSED_SIZE=$(ssh -p ${REMOTE_PORT} ${REMOTE_USER}@${REMOTE_HOST} "ls -lh $REMOTE_DUMP_PATH | awk '{print \$5}'")
+            COMPRESSED_SIZE_BYTES=$(ssh -p ${REMOTE_PORT} ${REMOTE_USER}@${REMOTE_HOST} "stat -f%z $REMOTE_DUMP_PATH 2>/dev/null || stat -c%s $REMOTE_DUMP_PATH 2>/dev/null")
+
+            # Calculate compression ratio
+            if [ -n "$REMOTE_SIZE_BYTES" ] && [ -n "$COMPRESSED_SIZE_BYTES" ]; then
+                COMPRESSION_RATIO=$(awk "BEGIN {printf \"%.1f\", ($REMOTE_SIZE_BYTES / $COMPRESSED_SIZE_BYTES)}")
+                SPACE_SAVED=$(awk "BEGIN {printf \"%.1f\", (($REMOTE_SIZE_BYTES - $COMPRESSED_SIZE_BYTES) / $REMOTE_SIZE_BYTES * 100)}")
+                echo -e "${GREEN}✓ Compressed size: ${COMPRESSED_SIZE} (ratio: ${COMPRESSION_RATIO}x, saved: ${SPACE_SAVED}%)${NC}"
+            else
+                echo -e "${GREEN}✓ Compressed size: ${COMPRESSED_SIZE}${NC}"
+            fi
         else
-            echo -e "${GREEN}✓ Compressed size: ${COMPRESSED_SIZE}${NC}"
+            echo -e "${RED}✗ Failed to compress dump file${NC}"
+            exit 1
         fi
     else
-        echo -e "${RED}✗ Failed to compress dump file${NC}"
-        exit 1
+        echo ""
+        echo -e "${YELLOW}Step 3/5: Skipping compression (disabled)${NC}"
     fi
-else
+
     echo ""
-    echo -e "${YELLOW}Step 3/5: Skipping compression (disabled)${NC}"
-fi
-
-echo ""
-echo -e "${YELLOW}Step 4/5: Transferring dump file to local server...${NC}"
-scp -P ${REMOTE_PORT} ${REMOTE_USER}@${REMOTE_HOST}:${REMOTE_DUMP_PATH} ${LOCAL_DUMP_PATH}
-
-if [ $? -eq 0 ]; then
-    echo -e "${GREEN}✓ File transferred successfully${NC}"
-    echo "Local path: ${LOCAL_DUMP_PATH}"
-else
-    echo -e "${RED}✗ Failed to transfer file${NC}"
-    exit 1
-fi
-
-echo ""
-echo -e "${YELLOW}Step 5/5: Cleaning up remote dump file...${NC}"
-ssh -p ${REMOTE_PORT} ${REMOTE_USER}@${REMOTE_HOST} "rm -f $REMOTE_DUMP_PATH"
-
-if [ $? -eq 0 ]; then
-    echo -e "${GREEN}✓ Remote cleanup completed${NC}"
-else
-    echo -e "${YELLOW}⚠ Warning: Failed to clean up remote dump file${NC}"
-fi
-
-# Decompress locally if compression was used
-if [ "$COMPRESSION_ENABLED" = true ]; then
-    echo ""
-    echo -e "${YELLOW}Decompressing file locally...${NC}"
-
-    $DECOMPRESS_CMD "$LOCAL_DUMP_PATH"
+    echo -e "${YELLOW}Step 4/5: Transferring dump file to local server...${NC}"
+    scp -P ${REMOTE_PORT} ${REMOTE_USER}@${REMOTE_HOST}:${REMOTE_DUMP_PATH} ${LOCAL_DUMP_PATH}
 
     if [ $? -eq 0 ]; then
-        # Remove compression extension from path
-        LOCAL_DUMP_PATH="${LOCAL_DUMP_PATH%${COMPRESSION_EXT}}"
-        LOCAL_SIZE=$(ls -lh "$LOCAL_DUMP_PATH" | awk '{print $5}')
-        echo -e "${GREEN}✓ Decompressed successfully${NC}"
-        echo "Decompressed size: ${LOCAL_SIZE}"
+        echo -e "${GREEN}✓ File transferred successfully${NC}"
+        echo "Local path: ${LOCAL_DUMP_PATH}"
     else
-        echo -e "${RED}✗ Failed to decompress file${NC}"
+        echo -e "${RED}✗ Failed to transfer file${NC}"
         exit 1
     fi
+
+    echo ""
+    echo -e "${YELLOW}Step 5/5: Cleaning up remote dump file...${NC}"
+    ssh -p ${REMOTE_PORT} ${REMOTE_USER}@${REMOTE_HOST} "rm -f $REMOTE_DUMP_PATH"
+
+    if [ $? -eq 0 ]; then
+        echo -e "${GREEN}✓ Remote cleanup completed${NC}"
+    else
+        echo -e "${YELLOW}⚠ Warning: Failed to clean up remote dump file${NC}"
+    fi
+
+    # Decompress locally if compression was used
+    if [ "$COMPRESSION_ENABLED" = true ]; then
+        echo ""
+        echo -e "${YELLOW}Decompressing file locally...${NC}"
+
+        $DECOMPRESS_CMD "$LOCAL_DUMP_PATH"
+
+        if [ $? -eq 0 ]; then
+            # Remove compression extension from path
+            LOCAL_DUMP_PATH="${LOCAL_DUMP_PATH%${COMPRESSION_EXT}}"
+            LOCAL_SIZE=$(ls -lh "$LOCAL_DUMP_PATH" | awk '{print $5}')
+            echo -e "${GREEN}✓ Decompressed successfully${NC}"
+            echo "Decompressed size: ${LOCAL_SIZE}"
+        else
+            echo -e "${RED}✗ Failed to decompress file${NC}"
+            exit 1
+        fi
+    fi
+else
+    # Local clone mode - dump already created locally
+    echo ""
+    echo -e "${YELLOW}Step 2/3: Checking dump file size...${NC}"
+    LOCAL_SIZE=$(ls -lh "$LOCAL_DUMP_PATH" | awk '{print $5}')
+    echo -e "${GREEN}✓ Dump file size: ${LOCAL_SIZE}${NC}"
 fi
 
 echo ""
-echo -e "${GREEN}=== Database Sync Completed Successfully ===${NC}"
+if [ "$LOCAL_CLONE" = true ]; then
+    echo -e "${GREEN}=== PostgreSQL Local Dump Created Successfully ===${NC}"
+else
+    echo -e "${GREEN}=== PostgreSQL Database Sync Completed Successfully ===${NC}"
+fi
 FINAL_DUMP_SIZE=$(ls -lh "$LOCAL_DUMP_PATH" | awk '{print $5}')
 echo "Dump file: ${LOCAL_DUMP_PATH}"
 echo "DUMP_SIZE=${FINAL_DUMP_SIZE}"
@@ -444,7 +521,11 @@ fi
 # Auto restore if requested
 if [ "$AUTO_RESTORE" = true ]; then
     echo ""
-    echo -e "${GREEN}=== Starting Database Restore ===${NC}"
+    if [ "$LOCAL_CLONE" = true ]; then
+        echo -e "${GREEN}=== Starting PostgreSQL Database Clone (Step 3/3) ===${NC}"
+    else
+        echo -e "${GREEN}=== Starting PostgreSQL Database Restore ===${NC}"
+    fi
 
     # Check if database exists
     echo -e "${YELLOW}Step 1/3: Checking if database exists...${NC}"
@@ -509,7 +590,12 @@ if [ "$AUTO_RESTORE" = true ]; then
     fi
 
     echo ""
-    echo -e "${GREEN}=== Database Restore Completed ===${NC}"
+    if [ "$LOCAL_CLONE" = true ]; then
+        echo -e "${GREEN}=== PostgreSQL Database Clone Completed ===${NC}"
+        echo "Cloned from: $DATABASE → $DEST_DB_NAME"
+    else
+        echo -e "${GREEN}=== PostgreSQL Database Restore Completed ===${NC}"
+    fi
 else
     echo ""
     echo "To restore this dump manually, use:"

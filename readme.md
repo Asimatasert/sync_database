@@ -1,12 +1,12 @@
-# PostgreSQL Database Sync Tool
+# PostgreSQL Database Sync & Clone Tool
 
-A powerful bash-based tool for syncing PostgreSQL databases between remote and local servers via SSH. Supports multiple databases, schema/table exclusions, automated restore operations, compression, automatic cleanup, and Telegram notifications.
+A powerful bash-based tool for syncing PostgreSQL databases between remote and local servers via SSH, or cloning databases locally. Supports multiple databases, schema/table exclusions, automated restore operations, compression, automatic cleanup, and Telegram notifications.
 
-## ⚠️ Important: SSH Access Required
+## SSH Access (For Remote Sync Only)
 
-**Before using this tool, you MUST configure SSH key-based authentication to your remote server.**
+**Note**: SSH configuration is only needed for remote database sync. For local database cloning, you can skip this section!
 
-This script requires passwordless SSH access to the remote server where your source database is located. You need to set up RSA key authentication first.
+For remote sync, you need to configure SSH key-based authentication to your remote server. This script requires passwordless SSH access to the remote server where your source database is located.
 
 ### Quick Setup
 
@@ -55,6 +55,7 @@ ssh-copy-id username@remote-ip-address
 ## 🚀 Features
 
 - ✅ **SSH-based remote database dumps** - Connect to remote servers via SSH (RSA key authentication)
+- ✅ **Local database cloning** - Clone databases on localhost without SSH (NEW!)
 - ✅ **Automated restore** - Optionally restore dumps to local databases automatically
 - ✅ **Multiple database support** - Sync multiple databases with a single command
 - ✅ **Table exclusions** - Exclude specific tables from dumps
@@ -210,9 +211,42 @@ cp example_sync_database.json sync_database.json
 
 ## 📖 Usage
 
-### Single Database Sync
+### Local Database Cloning (NEW!)
 
-Use `sync_database` for single database operations:
+Clone a database on localhost without SSH:
+
+```bash
+# Basic clone (same cluster - credentials auto-inherited)
+bash sync_database --local-clone \
+  --database mydb \
+  --source-password 'pass' \
+  --dest-database mydb_clone
+
+# Clone with table exclusions (same cluster)
+bash sync_database --local-clone \
+  --database production \
+  --source-password 'prod_pass' \
+  --dest-database test_env \
+  --exclude 'audit.logged_actions,sessions,cache'
+
+# Clone with schema exclusions (same cluster)
+bash sync_database --local-clone \
+  --database mydb \
+  --source-password 'pass' \
+  --dest-database mydb_backup \
+  --exclude-schema 'test_schema,temp_schema'
+
+# Clone between different clusters (different ports)
+bash sync_database --local-clone \
+  --database mydb --source-port 5432 --source-password 'pass1' \
+  --dest-database mydb_copy --dest-port 5433 --dest-password 'pass2'
+```
+
+**Important**: When source and destination have the same host and port (same PostgreSQL cluster), destination credentials are automatically inherited from source. You only need to specify different credentials when cloning between different clusters (different ports).
+
+### Remote Database Sync
+
+Use `sync_database` for remote sync operations:
 
 ```bash
 bash sync_database \
@@ -242,7 +276,7 @@ If no config file is specified, it uses `sync_database.json` by default.
 {
   "databases": [
     {
-      "name": "Production Database",
+      "name": "Production Database - Remote Sync",
       "enabled": true,
       "source": {
         "database": "prod_db",
@@ -275,6 +309,52 @@ If no config file is specified, it uses `sync_database.json` by default.
         },
         "keep_dumps": 5
       }
+    },
+    {
+      "name": "Local Clone - Same Cluster",
+      "enabled": true,
+      "mode": {
+        "local_clone": true
+      },
+      "source": {
+        "database": "prod_db",
+        "host": "localhost",
+        "port": 5432,
+        "user": "postgres",
+        "password": "postgres_pass"
+      },
+      "destination": {
+        "database": "prod_db_backup"
+      },
+      "options": {
+        "exclude_tables": ["logs", "sessions"],
+        "keep_dumps": 5
+      }
+    },
+    {
+      "name": "Local Clone - Different Clusters",
+      "enabled": true,
+      "mode": {
+        "local_clone": true
+      },
+      "source": {
+        "database": "dev_db",
+        "host": "localhost",
+        "port": 5432,
+        "user": "dev_admin",
+        "password": "dev_pass"
+      },
+      "destination": {
+        "database": "dev_db_test",
+        "host": "localhost",
+        "port": 5433,
+        "user": "test_admin",
+        "password": "test_pass"
+      },
+      "options": {
+        "exclude_tables": ["cache"],
+        "keep_dumps": 3
+      }
     }
   ],
   "global_options": {
@@ -297,27 +377,33 @@ If no config file is specified, it uses `sync_database.json` by default.
 |-------|------|----------|-------------|
 | `name` | string | Yes | Descriptive name for the database |
 | `enabled` | boolean | Yes | Enable/disable this database sync |
+| `mode.local_clone` | boolean | No | Enable local clone mode (default: false = remote sync) |
 | `source.database` | string | Yes | Source database name |
 | `source.host` | string | No | Source DB host (default: localhost) |
 | `source.port` | number | No | Source DB port (default: 5432) |
 | `source.user` | string | No | Source DB user (default: postgres) |
 | `source.password` | string | Yes | Source DB password |
 | `remote.ssh_user` | string | No | SSH username (default: your_ssh_user) |
-| `remote.ssh_host` | string | Yes | SSH server IP/hostname |
+| `remote.ssh_host` | string | Conditional* | SSH server IP/hostname (*not needed for local clone) |
 | `remote.ssh_port` | number | No | SSH port (default: 22) |
 | `destination.database` | string | No | Destination DB name (default: same as source) |
 | `destination.host` | string | No | Destination DB host (default: localhost) |
 | `destination.port` | number | No | Destination DB port (default: 5432) |
-| `destination.user` | string | No | Destination DB user (default: postgres) |
-| `destination.password` | string | Conditional | Required if restore is true |
-| `destination.restore` | boolean | Yes | Auto-restore after dump |
+| `destination.user` | string | No | Destination DB user (auto-inherited if same cluster) |
+| `destination.password` | string | Conditional | Required if restore is true or different cluster |
+| `destination.restore` | boolean | Conditional* | Auto-restore after dump (*ignored in local clone) |
 | `options.exclude_tables` | array | No | Tables to exclude (e.g., ["audit.logged_actions"]) |
 | `options.exclude_schemas` | array | No | Schemas to exclude (e.g., ["test_schema"]) |
-| `options.compression.enabled` | boolean | No | Enable compression (default: true) |
+| `options.compression.enabled` | boolean | No | Enable compression (default: true, ignored in local clone) |
 | `options.compression.type` | string | No | Compression type: gzip, xz, bzip2, none (default: gzip) |
 | `options.compression.level` | number | No | Compression level 1-9 (default: 6) |
 | `options.compression.pg_dump_level` | number | No | PostgreSQL dump compression 0-9 (default: 6) |
 | `options.keep_dumps` | number | No | Keep only last N dumps (overrides global setting) |
+
+**Important Notes:**
+- When `mode.local_clone` is `true`, the `remote` section is not needed
+- When source and destination have the same `host:port` (same cluster), destination credentials are auto-inherited from source
+- Only specify different credentials when cloning between different clusters (different ports)
 
 #### Global Options
 
@@ -496,16 +582,16 @@ bash sync_database_runner
 Add to crontab (`crontab -e`):
 
 ```bash
-# Daily at 2 AM
+# Daily at 2 AM - Remote sync runner
 0 2 * * * cd /path/to/sync_database && bash sync_database_runner >> ./data/dumps/cron.log 2>&1
 
-# Every 6 hours
+# Every 6 hours - Remote sync
 0 */6 * * * cd /path/to/sync_database && bash sync_database_runner
 
-# Every Sunday at 3 AM
-0 3 * * 0 cd /path/to/sync_database && bash sync_database_runner
+# Clone production to test database every Sunday at 3 AM
+0 3 * * 0 cd /path/to/sync_database && bash sync_database --local-clone --database production --source-password 'pass' --dest-database test_env --dest-password 'pass'
 
-# Weekdays at 1 AM
+# Weekdays at 1 AM - Remote sync
 0 1 * * 1-5 cd /path/to/sync_database && bash sync_database_runner
 ```
 
@@ -686,6 +772,12 @@ For issues and questions:
 - Open an issue on GitHub
 
 ## 🔄 Changelog
+
+### Version 2.1.0 (2025-01-17)
+- **NEW**: Added local database cloning (`--local-clone` flag)
+- Clone databases on localhost without SSH
+- Added validation to prevent same source/destination names in local clone mode
+- Updated documentation with local cloning examples
 
 ### Version 2.0.0 (2025-01-17)
 - Added compression support (gzip, xz, bzip2)

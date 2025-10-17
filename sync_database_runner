@@ -110,9 +110,12 @@ sync_database() {
     local src_user=$(echo "$db_config" | jq -r '.source.user // "postgres"')
     local src_pass=$(echo "$db_config" | jq -r '.source.password')
 
-    # Extract remote config
+    # Extract mode config (local clone or remote sync)
+    local local_clone=$(echo "$db_config" | jq -r '.mode.local_clone // false')
+
+    # Extract remote config (only needed if not local clone)
     local remote_user=$(echo "$db_config" | jq -r '.remote.ssh_user // "your_ssh_user"')
-    local remote_host=$(echo "$db_config" | jq -r '.remote.ssh_host')
+    local remote_host=$(echo "$db_config" | jq -r '.remote.ssh_host // ""')
     local remote_port=$(echo "$db_config" | jq -r '.remote.ssh_port // 22')
 
     # Extract destination config
@@ -146,22 +149,42 @@ sync_database() {
     cmd="$cmd --source-port $src_port"
     cmd="$cmd --source-user '$src_user'"
     cmd="$cmd --source-password '$src_pass'"
-    cmd="$cmd --remote-user '$remote_user'"
-    cmd="$cmd --remote-ip '$remote_host'"
-    cmd="$cmd --remote-port $remote_port"
 
-    if [ "$restore" = "true" ]; then
-        if [ -z "$dest_pass" ]; then
-            echo -e "${RED}✗ Error: destination password required for restore${NC}"
-            log_message "ERROR" "Missing destination password for: $name"
-            return 1
-        fi
-        cmd="$cmd --restore"
+    # Add local-clone or remote-sync parameters
+    if [ "$local_clone" = "true" ]; then
+        cmd="$cmd --local-clone"
         cmd="$cmd --dest-database '$dest_db'"
         cmd="$cmd --dest-host '$dest_host'"
         cmd="$cmd --dest-port $dest_port"
-        cmd="$cmd --dest-user '$dest_user'"
-        cmd="$cmd --dest-password '$dest_pass'"
+
+        # Only add destination credentials if explicitly provided
+        # (script will auto-inherit if same host:port)
+        if [ -n "$dest_user" ]; then
+            cmd="$cmd --dest-user '$dest_user'"
+        fi
+        if [ -n "$dest_pass" ]; then
+            cmd="$cmd --dest-password '$dest_pass'"
+        fi
+    else
+        # Remote sync mode
+        cmd="$cmd --remote-user '$remote_user'"
+        cmd="$cmd --remote-ip '$remote_host'"
+        cmd="$cmd --remote-port $remote_port"
+
+        if [ "$restore" = "true" ]; then
+            cmd="$cmd --restore"
+            cmd="$cmd --dest-database '$dest_db'"
+            cmd="$cmd --dest-host '$dest_host'"
+            cmd="$cmd --dest-port $dest_port"
+
+            # Only add destination credentials if explicitly provided
+            if [ -n "$dest_user" ]; then
+                cmd="$cmd --dest-user '$dest_user'"
+            fi
+            if [ -n "$dest_pass" ]; then
+                cmd="$cmd --dest-password '$dest_pass'"
+            fi
+        fi
     fi
 
     if [ -n "$exclude_tables" ]; then

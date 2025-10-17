@@ -1,0 +1,192 @@
+{
+  "databases": [
+    {
+      "name": "Production Database - Remote Sync",
+      "enabled": true,
+      "source": {
+        "database": "prod_db",
+        "host": "localhost",
+        "port": 5432,
+        "user": "postgres",
+        "password": "source_password"
+      },
+      "remote": {
+        "ssh_user": "your_ssh_user",
+        "ssh_host": "192.168.1.100",
+        "ssh_port": 22
+      },
+      "destination": {
+        "database": "prod_db",
+        "host": "localhost",
+        "port": 5432,
+        "user": "postgres",
+        "password": "dest_password",
+        "restore": true
+      },
+      "options": {
+        "exclude_tables": ["logs", "sessions"],
+        "exclude_schemas": ["temp"],
+        "compression": {
+          "enabled": true,
+          "type": "gzip",
+          "level": 6,
+          "pg_dump_level": 6
+        },
+        "keep_dumps": 3
+      }
+    },
+    {
+      "name": "Development Database - Without Authentication",
+      "enabled": true,
+      "source": {
+        "database": "dev_db",
+        "host": "localhost",
+        "port": 5432,
+        "user": "postgres"
+      },
+      "remote": {
+        "ssh_user": "your_ssh_user",
+        "ssh_host": "192.168.1.100",
+        "ssh_port": 22
+      },
+      "destination": {
+        "database": "dev_db",
+        "host": "localhost",
+        "port": 5432,
+        "user": "postgres",
+        "restore": true
+      },
+      "options": {
+        "exclude_tables": ["cache", "temp_data"],
+        "compression": {
+          "enabled": false
+        },
+        "keep_dumps": 5
+      }
+    },
+    {
+      "name": "Analytics Database - Different DB Name",
+      "enabled": true,
+      "source": {
+        "database": "analytics_prod",
+        "host": "localhost",
+        "port": 5432,
+        "user": "readonly",
+        "password": "readonly_pass"
+      },
+      "remote": {
+        "ssh_user": "your_ssh_user",
+        "ssh_host": "192.168.1.100"
+      },
+      "destination": {
+        "database": "analytics_dev",
+        "host": "localhost",
+        "port": 5432,
+        "user": "postgres",
+        "password": "dev_pass",
+        "restore": true
+      },
+      "options": {
+        "exclude_tables": ["raw_logs", "tmp_calculations"],
+        "exclude_schemas": ["staging"],
+        "compression": {
+          "enabled": true,
+          "type": "xz",
+          "level": 9,
+          "pg_dump_level": 9
+        },
+        "keep_dumps": 7
+      }
+    },
+    {
+      "name": "Reporting Database - Custom Port",
+      "enabled": false,
+      "source": {
+        "database": "reports_db",
+        "host": "localhost",
+        "port": 5433,
+        "user": "report_user",
+        "password": "report_pass"
+      },
+      "remote": {
+        "ssh_user": "your_ssh_user",
+        "ssh_host": "192.168.1.100",
+        "ssh_port": 2222
+      },
+      "destination": {
+        "database": "reports_db",
+        "host": "localhost",
+        "port": 5432,
+        "user": "postgres",
+        "password": "local_pass",
+        "restore": true
+      },
+      "options": {
+        "exclude_tables": [],
+        "compression": {
+          "enabled": true,
+          "type": "bzip2",
+          "level": 6,
+          "pg_dump_level": 6
+        },
+        "keep_dumps": 10
+      }
+    },
+    {
+      "name": "Production Clone - Same Cluster (Credentials Auto-Inherited)",
+      "enabled": true,
+      "mode": {
+        "local_clone": true
+      },
+      "source": {
+        "database": "prod_db",
+        "host": "localhost",
+        "port": 5432,
+        "user": "postgres",
+        "password": "postgres_pass"
+      },
+      "destination": {
+        "database": "prod_db_backup"
+      },
+      "options": {
+        "exclude_tables": ["logs", "sessions"],
+        "exclude_schemas": ["temp"],
+        "keep_dumps": 5
+      }
+    },
+    {
+      "name": "Development Clone - Different Clusters (Different Credentials)",
+      "enabled": true,
+      "mode": {
+        "local_clone": true
+      },
+      "source": {
+        "database": "dev_db",
+        "host": "localhost",
+        "port": 5432,
+        "user": "dev_admin",
+        "password": "dev_pass"
+      },
+      "destination": {
+        "database": "dev_db_test",
+        "host": "localhost",
+        "port": 5433,
+        "user": "test_admin",
+        "password": "test_pass"
+      },
+      "options": {
+        "exclude_tables": ["cache"],
+        "keep_dumps": 3
+      }
+    }
+  ],
+  "global_options": {
+    "log_file": "./data/dumps/sync.log",
+    "keep_dumps": 3,
+    "telegram": {
+      "enabled": true,
+      "bot_token": "123456789:ABCdefGHIjklMNOpqrsTUVwxyz",
+      "chat_id": "987654321"
+    }
+  }
+}
