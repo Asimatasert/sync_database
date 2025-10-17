@@ -1,0 +1,304 @@
+#!/bin/bash
+
+# sync_database_runner - Runs sync_database for multiple databases from JSON config
+# Usage: bash sync_database_runner [config_file]
+
+set -e
+
+# Colors for output
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+NC='\033[0m' # No Color
+
+# Get the directory where this script is located
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# Default config file (use script directory if not specified)
+if [ -n "$1" ]; then
+    CONFIG_FILE="$1"
+else
+    CONFIG_FILE="${SCRIPT_DIR}/sync_database.json"
+fi
+
+# Check if config file exists
+if [ ! -f "$CONFIG_FILE" ]; then
+    echo -e "${RED}Error: Config file not found: $CONFIG_FILE${NC}"
+    echo "Usage: bash sync_database_runner [config_file]"
+    exit 1
+fi
+
+# Check if jq is installed
+if ! command -v jq &> /dev/null; then
+    echo -e "${RED}Error: jq is not installed${NC}"
+    echo "Please install jq: sudo apt-get install jq (Ubuntu/Debian) or brew install jq (macOS)"
+    exit 1
+fi
+
+# Check if sync_database script exists
+SYNC_SCRIPT="$(dirname "$0")/sync_database"
+if [ ! -f "$SYNC_SCRIPT" ]; then
+    echo -e "${RED}Error: sync_database script not found: $SYNC_SCRIPT${NC}"
+    exit 1
+fi
+
+# Get log file from config
+LOG_FILE=$(jq -r '.global_options.log_file // "./data/dumps/sync.log"' "$CONFIG_FILE")
+LOG_DIR=$(dirname "$LOG_FILE")
+mkdir -p "$LOG_DIR"
+
+# Function to log messages
+log_message() {
+    local level=$1
+    shift
+    local message="$@"
+    local timestamp=$(date '+%Y-%m-%d %H:%M:%S')
+    echo "[$timestamp] [$level] $message" >> "$LOG_FILE"
+}
+
+# Function to send Telegram notification
+send_telegram() {
+    local message="$1"
+    local telegram_enabled=$(jq -r '.global_options.telegram.enabled // false' "$CONFIG_FILE")
+    local bot_token=$(jq -r '.global_options.telegram.bot_token // ""' "$CONFIG_FILE")
+    local chat_id=$(jq -r '.global_options.telegram.chat_id // ""' "$CONFIG_FILE")
+
+    if [ "$telegram_enabled" = "true" ] && [ -n "$bot_token" ] && [ -n "$chat_id" ]; then
+        local api_url="https://api.telegram.org/bot${bot_token}/sendMessage"
+        local response=$(curl -s -X POST "$api_url" \
+            -d "chat_id=${chat_id}" \
+            -d "text=${message}" \
+            -d "parse_mode=HTML" 2>&1)
+
+        if [ $? -eq 0 ]; then
+            log_message "INFO" "Telegram notification sent successfully"
+        else
+            log_message "ERROR" "Failed to send Telegram notification: $response"
+        fi
+    fi
+}
+
+# Function to run sync for a single database
+sync_database() {
+    local db_config="$1"
+    local db_index="$2"
+
+    # Extract database info
+    local name=$(echo "$db_config" | jq -r '.name')
+    local enabled=$(echo "$db_config" | jq -r '.enabled')
+
+    # Skip if disabled
+    if [ "$enabled" != "true" ]; then
+        echo -e "${YELLOW}⊝ Skipping disabled: $name${NC}"
+        log_message "INFO" "Skipped disabled database: $name"
+        return 0
+    fi
+
+    echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo -e "${GREEN}▶ Processing: $name${NC}"
+    log_message "INFO" "Starting sync for: $name"
+
+    # Record start time
+    local start_time=$(date +%s)
+    local start_date=$(date '+%Y-%m-%d %H:%M:%S')
+
+    # Extract source config
+    local src_db=$(echo "$db_config" | jq -r '.source.database')
+    local src_host=$(echo "$db_config" | jq -r '.source.host // "localhost"')
+    local src_port=$(echo "$db_config" | jq -r '.source.port // 5432')
+    local src_user=$(echo "$db_config" | jq -r '.source.user // "postgres"')
+    local src_pass=$(echo "$db_config" | jq -r '.source.password')
+
+    # Extract remote config
+    local remote_user=$(echo "$db_config" | jq -r '.remote.ssh_user // "your_ssh_user"')
+    local remote_host=$(echo "$db_config" | jq -r '.remote.ssh_host')
+    local remote_port=$(echo "$db_config" | jq -r '.remote.ssh_port // 22')
+
+    # Extract destination config
+    local dest_db=$(echo "$db_config" | jq -r '.destination.database // .source.database')
+    local dest_host=$(echo "$db_config" | jq -r '.destination.host // "localhost"')
+    local dest_port=$(echo "$db_config" | jq -r '.destination.port // 5432')
+    local dest_user=$(echo "$db_config" | jq -r '.destination.user // "postgres"')
+    local dest_pass=$(echo "$db_config" | jq -r '.destination.password // ""')
+    local restore=$(echo "$db_config" | jq -r '.destination.restore // false')
+
+    # Extract options
+    local exclude_tables=$(echo "$db_config" | jq -r '.options.exclude_tables // [] | join(",")')
+    local exclude_schemas=$(echo "$db_config" | jq -r '.options.exclude_schemas // [] | join(",")')
+
+    # Extract compression options
+    local compression_enabled=$(echo "$db_config" | jq -r '.options.compression.enabled // true')
+    local compression_type=$(echo "$db_config" | jq -r '.options.compression.type // "gzip"')
+    local compression_level=$(echo "$db_config" | jq -r '.options.compression.level // 6')
+    local pg_compression=$(echo "$db_config" | jq -r '.options.compression.pg_dump_level // 6')
+
+    # Extract keep_dumps option (check database level first, then global)
+    local keep_dumps=$(echo "$db_config" | jq -r '.options.keep_dumps // empty')
+    if [ -z "$keep_dumps" ]; then
+        keep_dumps=$(jq -r '.global_options.keep_dumps // 0' "$CONFIG_FILE")
+    fi
+
+    # Build command
+    local cmd="bash $SYNC_SCRIPT"
+    cmd="$cmd --database '$src_db'"
+    cmd="$cmd --source-host '$src_host'"
+    cmd="$cmd --source-port $src_port"
+    cmd="$cmd --source-user '$src_user'"
+    cmd="$cmd --source-password '$src_pass'"
+    cmd="$cmd --remote-user '$remote_user'"
+    cmd="$cmd --remote-ip '$remote_host'"
+    cmd="$cmd --remote-port $remote_port"
+
+    if [ "$restore" = "true" ]; then
+        if [ -z "$dest_pass" ]; then
+            echo -e "${RED}✗ Error: destination password required for restore${NC}"
+            log_message "ERROR" "Missing destination password for: $name"
+            return 1
+        fi
+        cmd="$cmd --restore"
+        cmd="$cmd --dest-database '$dest_db'"
+        cmd="$cmd --dest-host '$dest_host'"
+        cmd="$cmd --dest-port $dest_port"
+        cmd="$cmd --dest-user '$dest_user'"
+        cmd="$cmd --dest-password '$dest_pass'"
+    fi
+
+    if [ -n "$exclude_tables" ]; then
+        cmd="$cmd --exclude \"$exclude_tables\""
+    fi
+
+    if [ -n "$exclude_schemas" ]; then
+        cmd="$cmd --exclude-schema \"$exclude_schemas\""
+    fi
+
+    # Add compression options
+    if [ "$compression_enabled" = "false" ]; then
+        cmd="$cmd --compression none"
+    else
+        cmd="$cmd --compression \"$compression_type\""
+        cmd="$cmd --compression-level $compression_level"
+        cmd="$cmd --pg-compression $pg_compression"
+    fi
+
+    # Add keep_dumps option
+    if [ "$keep_dumps" -gt 0 ]; then
+        cmd="$cmd --keep-dumps $keep_dumps"
+    fi
+
+    # Execute command
+    echo -e "${YELLOW}Executing sync...${NC}"
+
+    # Capture output to extract dump size
+    local output=$(eval "$cmd" 2>&1)
+    local exit_code=$?
+    echo "$output"
+
+    if [ $exit_code -eq 0 ]; then
+        # Calculate duration
+        local end_time=$(date +%s)
+        local end_date=$(date '+%Y-%m-%d %H:%M:%S')
+        local duration=$((end_time - start_time))
+        local hours=$((duration / 3600))
+        local minutes=$(((duration % 3600) / 60))
+        local seconds=$((duration % 60))
+        local duration_formatted=$(printf "%02d:%02d:%02d" $hours $minutes $seconds)
+
+        # Extract dump size from output
+        local dump_size=$(echo "$output" | grep "DUMP_SIZE=" | cut -d'=' -f2)
+        if [ -z "$dump_size" ]; then
+            dump_size="N/A"
+        fi
+
+        echo -e "${GREEN}✓ Success: $name${NC}"
+        log_message "SUCCESS" "Completed sync for: $name (Duration: $duration_formatted, Size: $dump_size)"
+        send_telegram "✅ <b>Database Sync Success</b>%0A%0ADatabase: <code>$name</code>%0AStatus: Completed successfully%0A%0AStart: $start_date%0AEnd: $end_date%0ADuration: $duration_formatted%0ASize: $dump_size"
+        return 0
+    else
+        # Calculate duration even on failure
+        local end_time=$(date +%s)
+        local end_date=$(date '+%Y-%m-%d %H:%M:%S')
+        local duration=$((end_time - start_time))
+        local hours=$((duration / 3600))
+        local minutes=$(((duration % 3600) / 60))
+        local seconds=$((duration % 60))
+        local duration_formatted=$(printf "%02d:%02d:%02d" $hours $minutes $seconds)
+
+        echo -e "${RED}✗ Failed: $name${NC}"
+        log_message "ERROR" "Failed sync for: $name (Duration: $duration_formatted)"
+        send_telegram "❌ <b>Database Sync Failed</b>%0A%0ADatabase: <code>$name</code>%0AStatus: Failed%0A%0AStart: $start_date%0AEnd: $end_date%0ADuration: $duration_formatted"
+        return 1
+    fi
+}
+
+# Main execution
+echo -e "${BLUE}╔════════════════════════════════════════╗${NC}"
+echo -e "${BLUE}║   Database Sync Runner Started         ║${NC}"
+echo -e "${BLUE}╚════════════════════════════════════════╝${NC}"
+echo ""
+echo "Config file: $CONFIG_FILE"
+echo "Log file: $LOG_FILE"
+echo ""
+
+log_message "INFO" "===== Sync Runner Started ====="
+
+# Get total number of databases
+TOTAL_DBS=$(jq '.databases | length' "$CONFIG_FILE")
+echo "Found $TOTAL_DBS database(s) in config"
+echo ""
+
+# Counters
+SUCCESS_COUNT=0
+FAILED_COUNT=0
+SKIPPED_COUNT=0
+
+# Process each database
+for i in $(seq 0 $(($TOTAL_DBS - 1))); do
+    db_config=$(jq ".databases[$i]" "$CONFIG_FILE")
+    enabled=$(echo "$db_config" | jq -r '.enabled')
+
+    if [ "$enabled" != "true" ]; then
+        SKIPPED_COUNT=$((SKIPPED_COUNT + 1))
+        name=$(echo "$db_config" | jq -r '.name')
+        echo -e "${YELLOW}⊝ Skipping: $name (disabled)${NC}"
+        continue
+    fi
+
+    if sync_database "$db_config" "$i"; then
+        SUCCESS_COUNT=$((SUCCESS_COUNT + 1))
+    else
+        FAILED_COUNT=$((FAILED_COUNT + 1))
+    fi
+
+    echo ""
+done
+
+# Summary
+echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+echo -e "${BLUE}║          Summary                        ║${NC}"
+echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+echo -e "Total databases: $TOTAL_DBS"
+echo -e "${GREEN}✓ Successful: $SUCCESS_COUNT${NC}"
+echo -e "${RED}✗ Failed: $FAILED_COUNT${NC}"
+echo -e "${YELLOW}⊝ Skipped: $SKIPPED_COUNT${NC}"
+echo ""
+
+log_message "INFO" "===== Sync Runner Completed ====="
+log_message "INFO" "Summary - Total: $TOTAL_DBS, Success: $SUCCESS_COUNT, Failed: $FAILED_COUNT, Skipped: $SKIPPED_COUNT"
+
+# Get disk usage information
+DISK_INFO=$(df -h / | tail -n 1 | awk '{print "Used: "$3" / "$2" ("$5")"}')
+
+# Send summary notification to Telegram
+if [ $FAILED_COUNT -gt 0 ]; then
+    send_telegram "📊 <b>Database Sync Summary</b>%0A%0ATotal: $TOTAL_DBS%0A✅ Success: $SUCCESS_COUNT%0A❌ Failed: $FAILED_COUNT%0A⊝ Skipped: $SKIPPED_COUNT%0A%0A⚠️ <b>Some syncs failed!</b>%0ATime: $(date '+%Y-%m-%d %H:%M:%S')%0A%0A💾 Disk: $DISK_INFO"
+else
+    send_telegram "📊 <b>Database Sync Summary</b>%0A%0ATotal: $TOTAL_DBS%0A✅ Success: $SUCCESS_COUNT%0A❌ Failed: $FAILED_COUNT%0A⊝ Skipped: $SKIPPED_COUNT%0A%0A✅ <b>All syncs completed successfully!</b>%0ATime: $(date '+%Y-%m-%d %H:%M:%S')%0A%0A💾 Disk: $DISK_INFO"
+fi
+
+# Exit with error if any failed
+if [ $FAILED_COUNT -gt 0 ]; then
+    exit 1
+fi
+
+exit 0
