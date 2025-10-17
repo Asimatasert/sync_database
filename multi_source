@@ -1,0 +1,94 @@
+#!/bin/bash
+
+# multi_source - Multi-Source PostgreSQL Sync
+# Sync from multiple remote servers to single local database
+
+# Multi-source settings
+MULTI_SOURCE_ENABLED=false
+MULTI_SOURCE_STRATEGY="latest"  # latest or merge_all
+
+# Color codes
+MS_GREEN='\033[0;32m'
+MS_YELLOW='\033[1;33m'
+MS_BLUE='\033[0;34m'
+MS_RED='\033[0;31m'
+MS_NC='\033[0m'
+
+# Function to sync from multiple sources
+sync_multi_source() {
+    local dest_db=$1
+    shift
+    local sources=("$@")
+
+    echo ""
+    echo -e "${MS_BLUE}=== Multi-Source Sync Started ===${MS_BLUE}"
+    echo "Sources: ${#sources[@]}"
+    echo "Destination: $dest_db"
+    echo "Strategy: $MULTI_SOURCE_STRATEGY"
+    echo ""
+
+    local temp_dumps=()
+    local success_count=0
+
+    # Dump from all sources
+    for source_info in "${sources[@]}"; do
+        # Parse source info: remote_host:database:user:password
+        IFS=':' read -r remote_host source_db source_user source_pass <<< "$source_info"
+
+        echo -e "${MS_YELLOW}Syncing from: $remote_host/$source_db${MS_NC}"
+
+        local temp_dump="${LOCAL_DUMP_DIR}/${source_db}_${remote_host}_${TIMESTAMP}.dump"
+
+        # Execute remote dump
+        ssh -p 22 "$REMOTE_USER@$remote_host" \
+            "PGPASSWORD='$source_pass' pg_dump -U $source_user -h localhost -Fc $source_db" \
+            > "$temp_dump"
+
+        if [ $? -eq 0 ]; then
+            temp_dumps+=("$temp_dump")
+            success_count=$((success_count + 1))
+            echo -e "${MS_GREEN}✓ Dump successful${MS_NC}"
+        else
+            echo -e "${MS_RED}✗ Dump failed${MS_NC}"
+        fi
+
+        echo ""
+    done
+
+    echo "Collected $success_count dump(s)"
+
+    if [ $success_count -eq 0 ]; then
+        echo -e "${MS_RED}✗ No successful dumps${MS_NC}"
+        return 1
+    fi
+
+    # Apply strategy
+    if [ "$MULTI_SOURCE_STRATEGY" = "latest" ]; then
+        echo "Using latest dump..."
+        local latest_dump="${temp_dumps[-1]}"
+
+        echo "Restoring to $dest_db..."
+        PGPASSWORD="$DEST_DB_PASSWORD" pg_restore \
+            --clean --if-exists \
+            -U "$DEST_DB_USER" -h "$DEST_DB_HOST" -p "$DEST_DB_PORT" \
+            -d "$dest_db" "$latest_dump"
+
+        if [ $? -eq 0 ]; then
+            echo -e "${MS_GREEN}✓ Multi-source sync completed${MS_NC}"
+        fi
+    fi
+
+    # Cleanup temp dumps
+    for dump in "${temp_dumps[@]}"; do
+        rm -f "$dump"
+    done
+
+    return 0
+}
+
+# Note: This is a simplified implementation
+# Full implementation would include:
+# - Merge strategies (conflict resolution)
+# - Data deduplication
+# - Schema validation
+# - Transaction management

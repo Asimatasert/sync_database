@@ -1,0 +1,293 @@
+#!/bin/bash
+
+# alerting - Multi-channel Alerting System for PostgreSQL Backup Operations
+# Supports: Telegram, Webhook, Email
+
+# Alert settings
+ALERTING_ENABLED=false
+ALERT_CHANNELS=""  # Comma-separated: telegram,webhook,email
+
+# Telegram settings (inherited from main script or set here)
+ALERT_TELEGRAM_ENABLED=false
+ALERT_TELEGRAM_BOT_TOKEN=""
+ALERT_TELEGRAM_CHAT_ID=""
+
+# Webhook settings
+ALERT_WEBHOOK_ENABLED=false
+ALERT_WEBHOOK_URL=""
+ALERT_WEBHOOK_METHOD="POST"
+
+# Email settings (using sendmail or mail command)
+ALERT_EMAIL_ENABLED=false
+ALERT_EMAIL_TO=""
+ALERT_EMAIL_FROM="postgres-backup@$(hostname)"
+ALERT_EMAIL_SUBJECT_PREFIX="[PostgreSQL Backup]"
+
+# Alert severity levels
+SEVERITY_INFO="info"
+SEVERITY_WARNING="warning"
+SEVERITY_ERROR="error"
+SEVERITY_CRITICAL="critical"
+
+# Alert filtering by severity
+ALERT_MIN_SEVERITY="warning"  # Minimum severity to trigger alerts
+
+# Color codes
+ALERT_GREEN='\033[0;32m'
+ALERT_YELLOW='\033[1;33m'
+ALERT_RED='\033[0;31m'
+ALERT_NC='\033[0m'
+
+# Function to compare severity levels
+severity_level() {
+    case $1 in
+        info) echo 0 ;;
+        warning) echo 1 ;;
+        error) echo 2 ;;
+        critical) echo 3 ;;
+        *) echo 0 ;;
+    esac
+}
+
+should_send_alert() {
+    local alert_severity=$1
+    local min_level=$(severity_level "$ALERT_MIN_SEVERITY")
+    local alert_level=$(severity_level "$alert_severity")
+
+    [ $alert_level -ge $min_level ]
+}
+
+# Function to send Telegram alert
+send_telegram_alert() {
+    local severity=$1
+    local title=$2
+    local message=$3
+
+    if [ "$ALERT_TELEGRAM_ENABLED" != "true" ]; then
+        return 0
+    fi
+
+    if [ -z "$ALERT_TELEGRAM_BOT_TOKEN" ] || [ -z "$ALERT_TELEGRAM_CHAT_ID" ]; then
+        echo -e "${ALERT_YELLOW}⚠ Telegram alert skipped: missing bot token or chat ID${ALERT_NC}"
+        return 1
+    fi
+
+    # Choose emoji based on severity
+    local emoji="ℹ️"
+    case $severity in
+        warning) emoji="⚠️" ;;
+        error) emoji="❌" ;;
+        critical) emoji="🚨" ;;
+    esac
+
+    # Format message for Telegram
+    local telegram_message="$emoji <b>$title</b>%0A%0A$message%0A%0A<i>Severity: $severity</i>%0A<i>Host: $(hostname)</i>%0A<i>Time: $(date '+%Y-%m-%d %H:%M:%S')</i>"
+
+    # Send to Telegram
+    local api_url="https://api.telegram.org/bot${ALERT_TELEGRAM_BOT_TOKEN}/sendMessage"
+    local response=$(curl -s -X POST "$api_url" \
+        -d "chat_id=${ALERT_TELEGRAM_CHAT_ID}" \
+        -d "text=${telegram_message}" \
+        -d "parse_mode=HTML" 2>&1)
+
+    if [ $? -eq 0 ]; then
+        echo -e "${ALERT_GREEN}✓ Telegram alert sent${ALERT_NC}"
+        return 0
+    else
+        echo -e "${ALERT_RED}✗ Failed to send Telegram alert${ALERT_NC}"
+        return 1
+    fi
+}
+
+# Function to send Webhook alert
+send_webhook_alert() {
+    local severity=$1
+    local title=$2
+    local message=$3
+
+    if [ "$ALERT_WEBHOOK_ENABLED" != "true" ]; then
+        return 0
+    fi
+
+    if [ -z "$ALERT_WEBHOOK_URL" ]; then
+        echo -e "${ALERT_YELLOW}⚠ Webhook alert skipped: missing URL${ALERT_NC}"
+        return 1
+    fi
+
+    # Create JSON payload
+    local json_payload=$(cat <<EOF
+{
+  "severity": "$severity",
+  "title": "$title",
+  "message": "$message",
+  "host": "$(hostname)",
+  "timestamp": "$(date -u '+%Y-%m-%dT%H:%M:%SZ')",
+  "database": "$DATABASE"
+}
+EOF
+)
+
+    # Send webhook
+    local response=$(curl -s -X "$ALERT_WEBHOOK_METHOD" "$ALERT_WEBHOOK_URL" \
+        -H "Content-Type: application/json" \
+        -d "$json_payload" 2>&1)
+
+    if [ $? -eq 0 ]; then
+        echo -e "${ALERT_GREEN}✓ Webhook alert sent${ALERT_NC}"
+        return 0
+    else
+        echo -e "${ALERT_RED}✗ Failed to send webhook alert${ALERT_NC}"
+        return 1
+    fi
+}
+
+# Function to send Email alert
+send_email_alert() {
+    local severity=$1
+    local title=$2
+    local message=$3
+
+    if [ "$ALERT_EMAIL_ENABLED" != "true" ]; then
+        return 0
+    fi
+
+    if [ -z "$ALERT_EMAIL_TO" ]; then
+        echo -e "${ALERT_YELLOW}⚠ Email alert skipped: missing recipient${ALERT_NC}"
+        return 1
+    fi
+
+    # Create email subject
+    local subject="${ALERT_EMAIL_SUBJECT_PREFIX} ${severity^^}: $title"
+
+    # Create email body
+    local email_body=$(cat <<EOF
+Severity: $severity
+Title: $title
+
+Message:
+$message
+
+---
+Host: $(hostname)
+Database: $DATABASE
+Time: $(date '+%Y-%m-%d %H:%M:%S')
+EOF
+)
+
+    # Try to send email using available command
+    if command -v mail &> /dev/null; then
+        echo "$email_body" | mail -s "$subject" -r "$ALERT_EMAIL_FROM" "$ALERT_EMAIL_TO"
+    elif command -v sendmail &> /dev/null; then
+        echo -e "Subject: $subject\nFrom: $ALERT_EMAIL_FROM\nTo: $ALERT_EMAIL_TO\n\n$email_body" | sendmail -t
+    else
+        echo -e "${ALERT_RED}✗ No mail command found (mail or sendmail required)${ALERT_NC}"
+        return 1
+    fi
+
+    if [ $? -eq 0 ]; then
+        echo -e "${ALERT_GREEN}✓ Email alert sent to $ALERT_EMAIL_TO${ALERT_NC}"
+        return 0
+    else
+        echo -e "${ALERT_RED}✗ Failed to send email alert${ALERT_NC}"
+        return 1
+    fi
+}
+
+# Main function to send alerts to all configured channels
+send_alert() {
+    local severity=$1
+    local title=$2
+    local message=$3
+
+    if [ "$ALERTING_ENABLED" != "true" ]; then
+        return 0
+    fi
+
+    # Check if alert should be sent based on severity
+    if ! should_send_alert "$severity"; then
+        return 0
+    fi
+
+    echo ""
+    echo -e "${ALERT_YELLOW}📢 Sending alerts...${ALERT_NC}"
+    echo "Severity: $severity"
+    echo "Title: $title"
+    echo ""
+
+    local sent_count=0
+    local failed_count=0
+
+    # Send to all enabled channels
+    if [ "$ALERT_TELEGRAM_ENABLED" = "true" ]; then
+        send_telegram_alert "$severity" "$title" "$message" && sent_count=$((sent_count + 1)) || failed_count=$((failed_count + 1))
+    fi
+
+    if [ "$ALERT_WEBHOOK_ENABLED" = "true" ]; then
+        send_webhook_alert "$severity" "$title" "$message" && sent_count=$((sent_count + 1)) || failed_count=$((failed_count + 1))
+    fi
+
+    if [ "$ALERT_EMAIL_ENABLED" = "true" ]; then
+        send_email_alert "$severity" "$title" "$message" && sent_count=$((sent_count + 1)) || failed_count=$((failed_count + 1))
+    fi
+
+    echo ""
+    if [ $sent_count -gt 0 ]; then
+        echo -e "${ALERT_GREEN}✓ Alerts sent: $sent_count channel(s)${ALERT_NC}"
+    fi
+    if [ $failed_count -gt 0 ]; then
+        echo -e "${ALERT_YELLOW}⚠ Failed alerts: $failed_count channel(s)${ALERT_NC}"
+    fi
+    echo ""
+}
+
+# Predefined alert templates
+
+alert_sync_success() {
+    local database=$1
+    local dump_size=$2
+    local duration=$3
+
+    send_alert "info" "Sync Success: $database" \
+        "Database sync completed successfully.%0A%0ADatabase: $database%0ADump Size: $dump_size%0ADuration: $duration"
+}
+
+alert_sync_failure() {
+    local database=$1
+    local error_msg=$2
+
+    send_alert "error" "Sync Failed: $database" \
+        "Database sync failed!%0A%0ADatabase: $database%0AError: $error_msg"
+}
+
+alert_health_check_warning() {
+    local check_name=$1
+    local details=$2
+
+    send_alert "warning" "Health Check Warning: $check_name" \
+        "Health check detected issues.%0A%0ACheck: $check_name%0ADetails: $details"
+}
+
+alert_health_check_error() {
+    local check_name=$1
+    local details=$2
+
+    send_alert "error" "Health Check Failed: $check_name" \
+        "Critical health check failure!%0A%0ACheck: $check_name%0ADetails: $details"
+}
+
+alert_disk_space_critical() {
+    local available_gb=$1
+    local threshold_gb=$2
+
+    send_alert "critical" "Disk Space Critical" \
+        "Critically low disk space!%0A%0AAvailable: ${available_gb}GB%0AThreshold: ${threshold_gb}GB%0A%0AImmediate action required!"
+}
+
+alert_dump_size_anomaly() {
+    local current_size=$1
+    local previous_size=$2
+    local change_percent=$3
+
+    send_alert "warning" "Dump Size Anomaly Detected" \
+        "Unusual change in dump size detected.%0A%0ACurrent: $current_size%0APrevious: $previous_size%0AChange: $change_percent%"
+}

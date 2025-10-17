@@ -1,0 +1,276 @@
+#!/bin/bash
+
+# health_checks.sh - PostgreSQL Health Check Functions
+# Sourced by sync_database script
+
+# Health check thresholds (can be overridden in JSON)
+HEALTH_CHECK_DISK_MIN_GB=10
+HEALTH_CHECK_REPLICATION_LAG_MAX_SEC=300
+HEALTH_CHECK_TABLE_BLOAT_MAX_PERCENT=50
+HEALTH_CHECK_LONG_QUERY_MAX_SEC=300
+
+# Health check result storage
+HEALTH_CHECK_RESULTS=()
+HEALTH_CHECK_WARNINGS=0
+HEALTH_CHECK_ERRORS=0
+
+# Color codes
+HC_GREEN='\033[0;32m'
+HC_YELLOW='\033[1;33m'
+HC_RED='\033[0;31m'
+HC_NC='\033[0m'
+
+# Function to log health check results
+log_health_check() {
+    local status=$1
+    local check_name=$2
+    local message=$3
+    local severity=$4  # info, warning, error
+
+    local color=$HC_GREEN
+    local symbol="✓"
+
+    case $severity in
+        warning)
+            color=$HC_YELLOW
+            symbol="⚠"
+            HEALTH_CHECK_WARNINGS=$((HEALTH_CHECK_WARNINGS + 1))
+            ;;
+        error)
+            color=$HC_RED
+            symbol="✗"
+            HEALTH_CHECK_ERRORS=$((HEALTH_CHECK_ERRORS + 1))
+            ;;
+    esac
+
+    echo -e "${color}${symbol} ${check_name}: ${message}${HC_NC}"
+    HEALTH_CHECK_RESULTS+=("[$severity] $check_name: $message")
+}
+
+# 1. Connection Health Check
+check_connection() {
+    local db_host=$1
+    local db_port=$2
+    local db_user=$3
+    local db_password=$4
+    local check_prefix=$5
+
+    echo -e "${HC_YELLOW}Checking database connection ($check_prefix)...${HC_NC}"
+
+    # Try to connect and run a simple query
+    local result=$(PGPASSWORD="$db_password" psql -U "$db_user" -h "$db_host" -p "$db_port" -t -c "SELECT 1" postgres 2>&1)
+
+    if [ $? -eq 0 ]; then
+        log_health_check "pass" "${check_prefix} Connection" "Connection successful" "info"
+        return 0
+    else
+        log_health_check "fail" "${check_prefix} Connection" "Connection failed: $result" "error"
+        return 1
+    fi
+}
+
+# 2. Disk Space Check
+check_disk_space() {
+    local target_dir=$1
+    local check_prefix=$2
+
+    echo -e "${HC_YELLOW}Checking disk space for $target_dir...${HC_NC}"
+
+    # Get disk usage in GB
+    local available_gb=$(df -BG "$target_dir" 2>/dev/null | tail -1 | awk '{print $4}' | sed 's/G//')
+
+    if [ -z "$available_gb" ]; then
+        # Try macOS format
+        available_gb=$(df -g "$target_dir" 2>/dev/null | tail -1 | awk '{print $4}')
+    fi
+
+    if [ -n "$available_gb" ]; then
+        if [ "$available_gb" -lt "$HEALTH_CHECK_DISK_MIN_GB" ]; then
+            log_health_check "fail" "${check_prefix} Disk Space" "Only ${available_gb}GB available (minimum: ${HEALTH_CHECK_DISK_MIN_GB}GB)" "error"
+            return 1
+        else
+            log_health_check "pass" "${check_prefix} Disk Space" "${available_gb}GB available" "info"
+            return 0
+        fi
+    else
+        log_health_check "skip" "${check_prefix} Disk Space" "Unable to check disk space" "warning"
+        return 0
+    fi
+}
+
+# 3. Replication Lag Check
+check_replication_lag() {
+    local db_host=$1
+    local db_port=$2
+    local db_user=$3
+    local db_password=$4
+    local check_prefix=$5
+
+    echo -e "${HC_YELLOW}Checking replication lag ($check_prefix)...${HC_NC}"
+
+    # Check if this is a standby server
+    local is_standby=$(PGPASSWORD="$db_password" psql -U "$db_user" -h "$db_host" -p "$db_port" -t -c "SELECT pg_is_in_recovery()" postgres 2>/dev/null | xargs)
+
+    if [ "$is_standby" != "t" ]; then
+        log_health_check "skip" "${check_prefix} Replication Lag" "Not a standby server" "info"
+        return 0
+    fi
+
+    # Get replication lag in seconds
+    local lag_seconds=$(PGPASSWORD="$db_password" psql -U "$db_user" -h "$db_host" -p "$db_port" -t -c "SELECT EXTRACT(EPOCH FROM (now() - pg_last_xact_replay_timestamp()))::int" postgres 2>/dev/null | xargs)
+
+    if [ -n "$lag_seconds" ]; then
+        if [ "$lag_seconds" -gt "$HEALTH_CHECK_REPLICATION_LAG_MAX_SEC" ]; then
+            log_health_check "fail" "${check_prefix} Replication Lag" "${lag_seconds}s lag (max: ${HEALTH_CHECK_REPLICATION_LAG_MAX_SEC}s)" "warning"
+            return 1
+        else
+            log_health_check "pass" "${check_prefix} Replication Lag" "${lag_seconds}s lag" "info"
+            return 0
+        fi
+    else
+        log_health_check "skip" "${check_prefix} Replication Lag" "Unable to determine lag" "info"
+        return 0
+    fi
+}
+
+# 4. Long Running Queries Check
+check_long_queries() {
+    local db_host=$1
+    local db_port=$2
+    local db_user=$3
+    local db_password=$4
+    local check_prefix=$5
+
+    echo -e "${HC_YELLOW}Checking for long-running queries ($check_prefix)...${HC_NC}"
+
+    # Get count of queries running longer than threshold
+    local long_query_count=$(PGPASSWORD="$db_password" psql -U "$db_user" -h "$db_host" -p "$db_port" -t -c "
+        SELECT COUNT(*)
+        FROM pg_stat_activity
+        WHERE state = 'active'
+        AND now() - query_start > interval '${HEALTH_CHECK_LONG_QUERY_MAX_SEC} seconds'
+        AND pid <> pg_backend_pid()
+    " postgres 2>/dev/null | xargs)
+
+    if [ -n "$long_query_count" ]; then
+        if [ "$long_query_count" -gt 0 ]; then
+            log_health_check "warn" "${check_prefix} Long Queries" "${long_query_count} queries running > ${HEALTH_CHECK_LONG_QUERY_MAX_SEC}s" "warning"
+        else
+            log_health_check "pass" "${check_prefix} Long Queries" "No long-running queries" "info"
+        fi
+        return 0
+    else
+        log_health_check "skip" "${check_prefix} Long Queries" "Unable to check" "info"
+        return 0
+    fi
+}
+
+# 5. Lock Waits Check
+check_lock_waits() {
+    local db_host=$1
+    local db_port=$2
+    local db_user=$3
+    local db_password=$4
+    local check_prefix=$5
+
+    echo -e "${HC_YELLOW}Checking for lock waits ($check_prefix)...${HC_NC}"
+
+    # Get count of queries waiting for locks
+    local lock_wait_count=$(PGPASSWORD="$db_password" psql -U "$db_user" -h "$db_host" -p "$db_port" -t -c "
+        SELECT COUNT(*)
+        FROM pg_stat_activity
+        WHERE wait_event_type = 'Lock'
+        AND pid <> pg_backend_pid()
+    " postgres 2>/dev/null | xargs)
+
+    if [ -n "$lock_wait_count" ]; then
+        if [ "$lock_wait_count" -gt 0 ]; then
+            log_health_check "warn" "${check_prefix} Lock Waits" "${lock_wait_count} queries waiting for locks" "warning"
+        else
+            log_health_check "pass" "${check_prefix} Lock Waits" "No lock waits detected" "info"
+        fi
+        return 0
+    else
+        log_health_check "skip" "${check_prefix} Lock Waits" "Unable to check" "info"
+        return 0
+    fi
+}
+
+# 6. Table Bloat Check (simplified version)
+check_table_bloat() {
+    local db_host=$1
+    local db_port=$2
+    local db_user=$3
+    local db_password=$4
+    local database=$5
+    local check_prefix=$6
+
+    echo -e "${HC_YELLOW}Checking for table bloat ($check_prefix)...${HC_NC}"
+
+    # Get top 5 most bloated tables (simplified estimation)
+    local bloat_info=$(PGPASSWORD="$db_password" psql -U "$db_user" -h "$db_host" -p "$db_port" -d "$database" -t -c "
+        SELECT
+            schemaname || '.' || tablename as table_name,
+            ROUND(100 * pg_total_relation_size(schemaname||'.'||tablename) /
+                  NULLIF(pg_relation_size(schemaname||'.'||tablename), 0)) as estimated_bloat_percent
+        FROM pg_tables
+        WHERE schemaname NOT IN ('pg_catalog', 'information_schema')
+        AND pg_relation_size(schemaname||'.'||tablename) > 0
+        ORDER BY pg_total_relation_size(schemaname||'.'||tablename) DESC
+        LIMIT 5
+    " 2>/dev/null)
+
+    if [ -n "$bloat_info" ]; then
+        local max_bloat=$(echo "$bloat_info" | awk '{print $NF}' | sort -rn | head -1)
+        if [ -n "$max_bloat" ] && [ "$max_bloat" -gt "$HEALTH_CHECK_TABLE_BLOAT_MAX_PERCENT" ]; then
+            log_health_check "warn" "${check_prefix} Table Bloat" "Max bloat: ${max_bloat}% (threshold: ${HEALTH_CHECK_TABLE_BLOAT_MAX_PERCENT}%)" "warning"
+        else
+            log_health_check "pass" "${check_prefix} Table Bloat" "Bloat levels acceptable" "info"
+        fi
+        return 0
+    else
+        log_health_check "skip" "${check_prefix} Table Bloat" "Unable to check" "info"
+        return 0
+    fi
+}
+
+# Master health check function - runs all checks
+run_health_checks() {
+    local db_host=$1
+    local db_port=$2
+    local db_user=$3
+    local db_password=$4
+    local database=$5
+    local check_prefix=$6
+
+    echo ""
+    echo -e "${HC_GREEN}=== Health Checks: $check_prefix ===${HC_NC}"
+    echo ""
+
+    # Reset counters
+    HEALTH_CHECK_WARNINGS=0
+    HEALTH_CHECK_ERRORS=0
+    HEALTH_CHECK_RESULTS=()
+
+    # Run all checks
+    check_connection "$db_host" "$db_port" "$db_user" "$db_password" "$check_prefix"
+    check_disk_space "$LOCAL_DUMP_DIR" "$check_prefix"
+    check_replication_lag "$db_host" "$db_port" "$db_user" "$db_password" "$check_prefix"
+    check_long_queries "$db_host" "$db_port" "$db_user" "$db_password" "$check_prefix"
+    check_lock_waits "$db_host" "$db_port" "$db_user" "$db_password" "$check_prefix"
+    check_table_bloat "$db_host" "$db_port" "$db_user" "$db_password" "$database" "$check_prefix"
+
+    echo ""
+    echo -e "${HC_GREEN}=== Health Check Summary ===${HC_NC}"
+    echo "Total Checks: ${#HEALTH_CHECK_RESULTS[@]}"
+    echo -e "Warnings: ${HC_YELLOW}${HEALTH_CHECK_WARNINGS}${HC_NC}"
+    echo -e "Errors: ${HC_RED}${HEALTH_CHECK_ERRORS}${HC_NC}"
+    echo ""
+
+    # Return error if critical issues found
+    if [ "$HEALTH_CHECK_ERRORS" -gt 0 ]; then
+        return 1
+    fi
+
+    return 0
+}

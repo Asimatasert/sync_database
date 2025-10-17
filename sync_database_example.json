@@ -1,0 +1,221 @@
+{
+  "global_options": {
+    "log_file": "./data/dumps/sync.log",
+    "keep_dumps": 5,
+
+    "telegram": {
+      "enabled": true,
+      "bot_token": "YOUR_TELEGRAM_BOT_TOKEN",
+      "chat_id": "YOUR_TELEGRAM_CHAT_ID"
+    },
+
+    "health_checks": {
+      "enabled": true,
+      "pre_sync": true,
+      "post_sync": false,
+      "connection_timeout": 10,
+      "disk_space_threshold": 80,
+      "replication_lag_threshold": 10,
+      "long_query_threshold": 300,
+      "lock_wait_threshold": 5,
+      "bloat_threshold": 30
+    },
+
+    "retention_policy": {
+      "enabled": true,
+      "strategy": "gfs",
+      "daily": 7,
+      "weekly": 4,
+      "monthly": 12,
+      "yearly": 3
+    },
+
+    "alerting": {
+      "webhook": {
+        "url": "https://your-webhook-url.com/alerts",
+        "headers": {
+          "Authorization": "Bearer YOUR_TOKEN"
+        }
+      },
+      "email": {
+        "enabled": false,
+        "smtp_host": "smtp.gmail.com",
+        "smtp_port": 587,
+        "smtp_user": "your-email@gmail.com",
+        "smtp_password": "your-app-password",
+        "from": "alerts@yourdomain.com",
+        "to": "admin@yourdomain.com"
+      },
+      "min_severity": "warning"
+    }
+  },
+
+  "databases": [
+    {
+      "name": "Production Database - Local Clone with All Features",
+      "enabled": true,
+      "mode": {
+        "local_clone": true
+      },
+      "source": {
+        "database": "prod_db",
+        "host": "localhost",
+        "port": 5432,
+        "user": "postgres",
+        "password": "your_password"
+      },
+      "destination": {
+        "database": "prod_db_backup",
+        "host": "localhost",
+        "port": 5432,
+        "user": "postgres",
+        "password": "your_password"
+      },
+      "options": {
+        "exclude_tables": [],
+        "exclude_schemas": [],
+        "compression": {
+          "enabled": true,
+          "type": "gzip",
+          "level": 6,
+          "pg_dump_level": 6
+        },
+        "keep_dumps": 10,
+        "health_checks": {
+          "enabled": true
+        },
+        "retention_policy": {
+          "enabled": true
+        },
+        "streaming": false,
+        "data_masking": {
+          "enabled": false,
+          "rules_file": "./masking_rules.json"
+        }
+      }
+    },
+
+    {
+      "name": "Development Database - Remote Sync with Streaming",
+      "enabled": true,
+      "mode": {
+        "local_clone": false
+      },
+      "source": {
+        "database": "dev_db",
+        "host": "192.168.1.100",
+        "port": 5432,
+        "user": "postgres",
+        "password": "dev_password"
+      },
+      "remote": {
+        "ssh_user": "deploy",
+        "ssh_host": "192.168.1.100",
+        "ssh_port": 22
+      },
+      "destination": {
+        "database": "dev_db_local",
+        "host": "localhost",
+        "port": 5432,
+        "user": "postgres",
+        "password": "local_password",
+        "restore": true
+      },
+      "options": {
+        "exclude_tables": ["audit_logs", "sessions"],
+        "exclude_schemas": ["temp", "staging"],
+        "compression": {
+          "enabled": true,
+          "type": "gzip",
+          "level": 9,
+          "pg_dump_level": 9
+        },
+        "streaming": true,
+        "health_checks": {
+          "enabled": false
+        },
+        "data_masking": {
+          "enabled": false
+        }
+      }
+    },
+
+    {
+      "name": "Staging Database - With Data Masking",
+      "enabled": true,
+      "mode": {
+        "local_clone": false
+      },
+      "source": {
+        "database": "staging_db",
+        "host": "staging.example.com",
+        "port": 5432,
+        "user": "postgres",
+        "password": "staging_password"
+      },
+      "remote": {
+        "ssh_user": "deploy",
+        "ssh_host": "staging.example.com",
+        "ssh_port": 22
+      },
+      "destination": {
+        "database": "staging_masked",
+        "host": "localhost",
+        "port": 5432,
+        "user": "postgres",
+        "password": "local_password",
+        "restore": true
+      },
+      "options": {
+        "exclude_tables": [],
+        "exclude_schemas": [],
+        "compression": {
+          "enabled": true,
+          "type": "gzip",
+          "level": 6,
+          "pg_dump_level": 6
+        },
+        "keep_dumps": 3,
+        "streaming": false,
+        "data_masking": {
+          "enabled": true,
+          "rules_file": "./masking_rules_staging.json"
+        },
+        "health_checks": {
+          "enabled": true
+        },
+        "retention_policy": {
+          "enabled": false
+        }
+      }
+    },
+
+    {
+      "name": "Analytics Database - Disabled Example",
+      "enabled": false,
+      "mode": {
+        "local_clone": true
+      },
+      "source": {
+        "database": "analytics_db",
+        "host": "localhost",
+        "port": 5432,
+        "user": "postgres",
+        "password": "your_password"
+      },
+      "destination": {
+        "database": "analytics_backup",
+        "host": "localhost",
+        "port": 5432
+      },
+      "options": {
+        "compression": {
+          "enabled": true,
+          "type": "gzip",
+          "level": 6,
+          "pg_dump_level": 6
+        }
+      }
+    }
+  ]
+}

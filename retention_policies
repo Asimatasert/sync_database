@@ -1,0 +1,274 @@
+#!/bin/bash
+
+# retention_policies.sh - PostgreSQL Backup Retention Policy Management
+# Implements Grandfather-Father-Son (GFS) backup rotation strategy
+
+# Retention policy settings (can be overridden in JSON)
+RETENTION_ENABLED=false
+RETENTION_STRATEGY="gfs"  # gfs (grandfather-father-son) or simple
+RETENTION_DAILY=7        # Keep last 7 daily backups
+RETENTION_WEEKLY=4       # Keep last 4 weekly backups (Sundays)
+RETENTION_MONTHLY=12     # Keep last 12 monthly backups (1st of month)
+RETENTION_YEARLY=3       # Keep last 3 yearly backups (1st of year)
+
+# Color codes
+RET_GREEN='\033[0;32m'
+RET_YELLOW='\033[1;33m'
+RET_BLUE='\033[0;34m'
+RET_NC='\033[0m'
+
+# Function to get dump file timestamp from filename
+get_dump_timestamp() {
+    local dump_file=$1
+    # Extract timestamp from filename: dbname_YYYYMMDD_HHMMSS.dump
+    local basename=$(basename "$dump_file")
+    local timestamp=$(echo "$basename" | grep -oP '\d{8}_\d{6}' | head -1)
+    echo "$timestamp"
+}
+
+# Function to convert timestamp to date format
+timestamp_to_date() {
+    local timestamp=$1
+    # Convert YYYYMMDD_HHMMSS to YYYY-MM-DD
+    echo "${timestamp:0:4}-${timestamp:4:2}-${timestamp:6:2}"
+}
+
+# Function to get day of week (0=Sunday, 6=Saturday)
+get_day_of_week() {
+    local date_str=$1
+    date -d "$date_str" +%w 2>/dev/null || date -j -f "%Y-%m-%d" "$date_str" +%w 2>/dev/null
+}
+
+# Function to get day of month
+get_day_of_month() {
+    local date_str=$1
+    date -d "$date_str" +%d 2>/dev/null || date -j -f "%Y-%m-%d" "$date_str" +%d 2>/dev/null
+}
+
+# Function to get day of year
+get_day_of_year() {
+    local date_str=$1
+    date -d "$date_str" +%j 2>/dev/null || date -j -f "%Y-%m-%d" "$date_str" +%j 2>/dev/null
+}
+
+# Function to categorize backup by GFS strategy
+categorize_backup_gfs() {
+    local dump_file=$1
+    local timestamp=$(get_dump_timestamp "$dump_file")
+
+    if [ -z "$timestamp" ]; then
+        echo "unknown"
+        return
+    fi
+
+    local date_str=$(timestamp_to_date "$timestamp")
+    local day_of_week=$(get_day_of_week "$date_str")
+    local day_of_month=$(get_day_of_month "$date_str")
+    local day_of_year=$(get_day_of_year "$date_str")
+
+    # Yearly: First day of year (Jan 1st)
+    if [ "$day_of_year" = "001" ] || [ "$day_of_year" = "1" ]; then
+        echo "yearly"
+    # Monthly: First day of month
+    elif [ "$day_of_month" = "01" ] || [ "$day_of_month" = "1" ]; then
+        echo "monthly"
+    # Weekly: Sunday backups
+    elif [ "$day_of_week" = "0" ]; then
+        echo "weekly"
+    # Daily: All other days
+    else
+        echo "daily"
+    fi
+}
+
+# Function to apply GFS retention policy
+apply_gfs_retention() {
+    local database=$1
+    local dump_dir=$2
+
+    echo -e "${RET_BLUE}=== Applying GFS Retention Policy ===${RET_NC}"
+    echo "Database: $database"
+    echo "Policy: Daily=$RETENTION_DAILY, Weekly=$RETENTION_WEEKLY, Monthly=$RETENTION_MONTHLY, Yearly=$RETENTION_YEARLY"
+    echo ""
+
+    # Find all dump files for this database, sorted by date (newest first)
+    local all_dumps=$(find "$dump_dir" -name "${database}_*.dump" -type f -printf '%T@ %p\n' 2>/dev/null | sort -rn | awk '{print $2}')
+
+    if [ -z "$all_dumps" ]; then
+        echo -e "${RET_YELLOW}No dumps found for database: $database${RET_NC}"
+        return 0
+    fi
+
+    # Categorize backups into GFS buckets
+    declare -A daily_backups
+    declare -A weekly_backups
+    declare -A monthly_backups
+    declare -A yearly_backups
+    declare -A all_categorized
+
+    echo "Categorizing backups..."
+    while IFS= read -r dump_file; do
+        local category=$(categorize_backup_gfs "$dump_file")
+        local timestamp=$(get_dump_timestamp "$dump_file")
+
+        case $category in
+            yearly)
+                yearly_backups["$timestamp"]="$dump_file"
+                all_categorized["$dump_file"]="yearly"
+                ;;
+            monthly)
+                monthly_backups["$timestamp"]="$dump_file"
+                all_categorized["$dump_file"]="monthly"
+                ;;
+            weekly)
+                weekly_backups["$timestamp"]="$dump_file"
+                all_categorized["$dump_file"]="weekly"
+                ;;
+            daily)
+                daily_backups["$timestamp"]="$dump_file"
+                all_categorized["$dump_file"]="daily"
+                ;;
+        esac
+    done <<< "$all_dumps"
+
+    echo ""
+    echo "Backup inventory:"
+    echo "  Yearly: ${#yearly_backups[@]} backups"
+    echo "  Monthly: ${#monthly_backups[@]} backups"
+    echo "  Weekly: ${#weekly_backups[@]} backups"
+    echo "  Daily: ${#daily_backups[@]} backups"
+    echo ""
+
+    # Determine which backups to keep
+    declare -A keep_backups
+
+    # Keep yearly backups (last N years)
+    local yearly_count=0
+    for timestamp in $(echo "${!yearly_backups[@]}" | tr ' ' '\n' | sort -rn); do
+        if [ $yearly_count -lt $RETENTION_YEARLY ]; then
+            keep_backups["${yearly_backups[$timestamp]}"]="yearly"
+            yearly_count=$((yearly_count + 1))
+        fi
+    done
+
+    # Keep monthly backups (last N months)
+    local monthly_count=0
+    for timestamp in $(echo "${!monthly_backups[@]}" | tr ' ' '\n' | sort -rn); do
+        if [ $monthly_count -lt $RETENTION_MONTHLY ]; then
+            if [ -z "${keep_backups[${monthly_backups[$timestamp]}]}" ]; then
+                keep_backups["${monthly_backups[$timestamp]}"]="monthly"
+            fi
+            monthly_count=$((monthly_count + 1))
+        fi
+    done
+
+    # Keep weekly backups (last N weeks)
+    local weekly_count=0
+    for timestamp in $(echo "${!weekly_backups[@]}" | tr ' ' '\n' | sort -rn); do
+        if [ $weekly_count -lt $RETENTION_WEEKLY ]; then
+            if [ -z "${keep_backups[${weekly_backups[$timestamp]}]}" ]; then
+                keep_backups["${weekly_backups[$timestamp]}"]="weekly"
+            fi
+            weekly_count=$((weekly_count + 1))
+        fi
+    done
+
+    # Keep daily backups (last N days)
+    local daily_count=0
+    for timestamp in $(echo "${!daily_backups[@]}" | tr ' ' '\n' | sort -rn); do
+        if [ $daily_count -lt $RETENTION_DAILY ]; then
+            if [ -z "${keep_backups[${daily_backups[$timestamp]}]}" ]; then
+                keep_backups["${daily_backups[$timestamp]}"]="daily"
+            fi
+            daily_count=$((daily_count + 1))
+        fi
+    done
+
+    # Delete backups not in keep list
+    local deleted_count=0
+    local kept_count=0
+
+    echo "Applying retention policy..."
+    while IFS= read -r dump_file; do
+        if [ -n "${keep_backups[$dump_file]}" ]; then
+            echo -e "  ${RET_GREEN}✓ Keep${RET_NC} [${keep_backups[$dump_file]}]: $(basename "$dump_file")"
+            kept_count=$((kept_count + 1))
+        else
+            echo -e "  ${RET_YELLOW}✗ Delete${RET_NC} [${all_categorized[$dump_file]}]: $(basename "$dump_file")"
+            rm -f "$dump_file"
+            deleted_count=$((deleted_count + 1))
+        fi
+    done <<< "$all_dumps"
+
+    echo ""
+    echo -e "${RET_GREEN}=== Retention Policy Applied ===${RET_NC}"
+    echo "Kept: $kept_count backups"
+    echo "Deleted: $deleted_count backups"
+    echo ""
+}
+
+# Function to apply simple retention policy (just keep last N)
+apply_simple_retention() {
+    local database=$1
+    local dump_dir=$2
+    local keep_count=$3
+
+    echo -e "${RET_BLUE}=== Applying Simple Retention Policy ===${RET_NC}"
+    echo "Database: $database"
+    echo "Policy: Keep last $keep_count backups"
+    echo ""
+
+    # Find all dump files for this database, sorted by modification time (oldest first)
+    local old_dumps=$(find "$dump_dir" -name "${database}_*.dump" -type f -printf '%T+ %p\n' 2>/dev/null | sort | awk '{print $2}')
+
+    if [ -z "$old_dumps" ]; then
+        echo -e "${RET_YELLOW}No dumps found for database: $database${RET_NC}"
+        return 0
+    fi
+
+    # Count total dumps
+    local total_dumps=$(echo "$old_dumps" | grep -c "^" 2>/dev/null || echo 0)
+
+    if [ "$total_dumps" -gt "$keep_count" ]; then
+        # Calculate how many to delete
+        local delete_count=$((total_dumps - keep_count))
+
+        echo "Found $total_dumps dumps, deleting oldest $delete_count..."
+        echo ""
+
+        # Delete oldest dumps
+        echo "$old_dumps" | head -n "$delete_count" | while read -r dump_file; do
+            if [ -f "$dump_file" ]; then
+                echo -e "  ${RET_YELLOW}✗ Deleting:${RET_NC} $(basename "$dump_file")"
+                rm -f "$dump_file"
+            fi
+        done
+
+        echo ""
+        echo -e "${RET_GREEN}✓ Cleanup completed (deleted $delete_count, kept $keep_count)${RET_NC}"
+    else
+        echo -e "${RET_GREEN}✓ No cleanup needed (found $total_dumps dumps, keeping $keep_count)${RET_NC}"
+    fi
+
+    echo ""
+}
+
+# Main function to manage retention policies
+manage_retention() {
+    local database=$1
+    local dump_dir=$2
+
+    if [ "$RETENTION_ENABLED" != "true" ]; then
+        return 0
+    fi
+
+    echo ""
+
+    if [ "$RETENTION_STRATEGY" = "gfs" ]; then
+        apply_gfs_retention "$database" "$dump_dir"
+    elif [ "$RETENTION_STRATEGY" = "simple" ] && [ "$KEEP_DUMPS" -gt 0 ]; then
+        apply_simple_retention "$database" "$dump_dir" "$KEEP_DUMPS"
+    else
+        echo -e "${RET_YELLOW}No retention policy configured${RET_NC}"
+    fi
+}

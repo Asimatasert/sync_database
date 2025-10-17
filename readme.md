@@ -54,8 +54,9 @@ ssh-copy-id username@remote-ip-address
 
 ## 🚀 Features
 
+### Core Features
 - ✅ **SSH-based remote database dumps** - Connect to remote servers via SSH (RSA key authentication)
-- ✅ **Local database cloning** - Clone databases on localhost without SSH (NEW!)
+- ✅ **Local database cloning** - Clone databases on localhost without SSH
 - ✅ **Automated restore** - Optionally restore dumps to local databases automatically
 - ✅ **Multiple database support** - Sync multiple databases with a single command
 - ✅ **Table exclusions** - Exclude specific tables from dumps
@@ -66,6 +67,15 @@ ssh-copy-id username@remote-ip-address
 - ✅ **Flexible naming** - Source and destination databases can have different names
 - ✅ **Custom ports** - Support for non-standard PostgreSQL ports
 - ✅ **Compression support** - Multiple compression options (gzip, xz, bzip2) with configurable levels
+
+### Advanced Features (v2.2.0+)
+- ✅ **Health Checks** - Database health monitoring (connection, disk space, replication lag, long queries, lock waits, table bloat)
+- ✅ **Retention Policies** - Grandfather-Father-Son (GFS) backup rotation strategy
+- ✅ **Alerting System** - Multi-channel alerts (Telegram, Webhook, Email) with severity levels
+- ✅ **Streaming Dumps** - Zero-disk streaming for large databases (remote → local without intermediate files)
+- ✅ **Data Masking** - Mask sensitive data (emails, phones, credit cards) for development environments
+- ✅ **Multi-Source Sync** - Sync from multiple remote servers to single local database
+- ✅ **Point-in-Time Recovery (PITR)** - WAL-based recovery to specific timestamps
 - ✅ **Automatic dump cleanup** - Keep only last N dumps, automatically delete older ones
 - ✅ **Telegram notifications** - Get instant notifications on sync status with emoji-rich messages
 
@@ -414,6 +424,21 @@ If no config file is specified, it uses `sync_database.json` by default.
 | `global_options.telegram.enabled` | boolean | No | Enable Telegram notifications (default: false) |
 | `global_options.telegram.bot_token` | string | Conditional | Telegram bot token (required if enabled) |
 | `global_options.telegram.chat_id` | string | Conditional | Telegram chat ID (required if enabled) |
+| `global_options.health_checks.enabled` | boolean | No | Enable health checks (default: true) |
+| `global_options.health_checks.pre_sync` | boolean | No | Run health checks before sync (default: true) |
+| `global_options.health_checks.post_sync` | boolean | No | Run health checks after sync (default: false) |
+| `global_options.retention_policy.enabled` | boolean | No | Enable GFS retention (default: false) |
+| `global_options.retention_policy.strategy` | string | No | Retention strategy (default: gfs) |
+| `global_options.retention_policy.daily` | number | No | Daily backups to keep (default: 7) |
+| `global_options.retention_policy.weekly` | number | No | Weekly backups to keep (default: 4) |
+| `global_options.retention_policy.monthly` | number | No | Monthly backups to keep (default: 12) |
+| `global_options.retention_policy.yearly` | number | No | Yearly backups to keep (default: 3) |
+| `global_options.alerting.webhook.url` | string | No | Webhook URL for alerts |
+| `global_options.alerting.email.to` | string | No | Email address for alerts |
+| `global_options.alerting.min_severity` | string | No | Minimum alert severity (default: warning) |
+| `options.streaming` | boolean | No | Enable streaming dumps (default: false) |
+| `options.data_masking.enabled` | boolean | No | Enable data masking (default: false) |
+| `options.data_masking.rules_file` | string | Conditional | Masking rules JSON file path |
 
 ### Setting up Telegram Notifications
 
@@ -577,6 +602,325 @@ Run:
 bash sync_database_runner
 ```
 
+## 🔬 Advanced Features
+
+### Health Checks
+
+Monitor database health before and after sync operations:
+
+**Features:**
+- Connection testing
+- Disk space monitoring
+- Replication lag detection
+- Long-running query detection
+- Lock wait monitoring
+- Table bloat analysis
+
+**Configuration (JSON):**
+```json
+"global_options": {
+  "health_checks": {
+    "enabled": true,
+    "pre_sync": true,
+    "post_sync": false,
+    "connection_timeout": 10,
+    "disk_space_threshold": 80,
+    "replication_lag_threshold": 10,
+    "long_query_threshold": 300,
+    "lock_wait_threshold": 5,
+    "bloat_threshold": 30
+  }
+}
+```
+
+**CLI Usage:**
+```bash
+bash sync_database --database mydb \
+  --source-password 'pass' \
+  --health-check-pre \
+  --health-check-post \
+  --remote-ip 192.168.1.100 \
+  --restore
+```
+
+### Retention Policies (GFS)
+
+Grandfather-Father-Son backup rotation strategy automatically manages backup lifecycle:
+
+**Strategy:**
+- **Daily**: Keep last 7 days
+- **Weekly**: Keep last 4 weeks
+- **Monthly**: Keep last 12 months
+- **Yearly**: Keep last 3 years
+
+**Configuration (JSON):**
+```json
+"global_options": {
+  "retention_policy": {
+    "enabled": true,
+    "strategy": "gfs",
+    "daily": 7,
+    "weekly": 4,
+    "monthly": 12,
+    "yearly": 3
+  }
+}
+```
+
+**CLI Usage:**
+```bash
+bash sync_database --database mydb \
+  --source-password 'pass' \
+  --retention-policy gfs \
+  --retention-daily 7 \
+  --retention-weekly 4 \
+  --retention-monthly 12 \
+  --retention-yearly 3
+```
+
+### Alerting System
+
+Multi-channel alerting with severity levels:
+
+**Channels:**
+- Telegram (with HTML formatting)
+- Webhook (JSON POST)
+- Email (SMTP)
+
+**Severity Levels:** info, warning, error, critical
+
+**Configuration (JSON):**
+```json
+"global_options": {
+  "alerting": {
+    "webhook": {
+      "url": "https://your-webhook-url.com/alerts",
+      "headers": {
+        "Authorization": "Bearer YOUR_TOKEN"
+      }
+    },
+    "email": {
+      "enabled": true,
+      "smtp_host": "smtp.gmail.com",
+      "smtp_port": 587,
+      "smtp_user": "your-email@gmail.com",
+      "smtp_password": "your-app-password",
+      "from": "alerts@yourdomain.com",
+      "to": "admin@yourdomain.com"
+    },
+    "min_severity": "warning"
+  }
+}
+```
+
+**CLI Usage:**
+```bash
+bash sync_database --database mydb \
+  --source-password 'pass' \
+  --alert-webhook "https://your-webhook.com/alerts" \
+  --alert-email "admin@example.com" \
+  --alert-severity warning
+```
+
+### Streaming Dumps
+
+Zero-disk streaming for large databases (no intermediate dump files):
+
+**Benefits:**
+- Reduced disk usage
+- Faster transfers
+- Real-time progress monitoring
+- Direct remote → local pipeline
+
+**How it works:**
+```
+SSH → pg_dump | gzip → local gunzip | pg_restore
+```
+
+**Configuration (JSON):**
+```json
+{
+  "name": "Large Database - Streaming",
+  "options": {
+    "streaming": true
+  }
+}
+```
+
+**CLI Usage:**
+```bash
+bash sync_database --database large_db \
+  --source-password 'pass' \
+  --remote-ip 192.168.1.100 \
+  --streaming \
+  --restore
+```
+
+**Note:** Streaming mode is ideal for:
+- Very large databases (>100GB)
+- Limited disk space scenarios
+- Network transfers with low latency
+
+### Data Masking
+
+Mask sensitive data for development/testing environments:
+
+**Supported Patterns:**
+- Email addresses (user@example.com → u***@e***.com)
+- Phone numbers (+1234567890 → +12****7890)
+- Credit cards (1234567890123456 → 1234********3456)
+- SSN patterns (XXX-XX-XXXX → ***-**-****)
+
+**Default Masking (CLI):**
+```bash
+bash sync_database --database prod_db \
+  --source-password 'pass' \
+  --data-masking \
+  --restore
+```
+
+**Custom Rules (JSON):**
+```json
+{
+  "name": "Production - Masked for Dev",
+  "options": {
+    "data_masking": {
+      "enabled": true,
+      "rules_file": "./masking_rules.json"
+    }
+  }
+}
+```
+
+**Example Masking Rules File:**
+```json
+{
+  "rules": [
+    {
+      "table": "users",
+      "column": "email",
+      "method": "email_mask",
+      "description": "Mask user email addresses"
+    },
+    {
+      "table": "users",
+      "column": "phone",
+      "method": "phone_mask",
+      "description": "Mask user phone numbers"
+    },
+    {
+      "table": "customers",
+      "column": "credit_card",
+      "method": "credit_card_mask",
+      "description": "Mask credit card numbers"
+    },
+    {
+      "table": "employees",
+      "column": "ssn",
+      "method": "anonymize",
+      "description": "Anonymize social security numbers"
+    }
+  ]
+}
+```
+
+**Masking Methods:**
+- `email_mask`: Partially masks email addresses
+- `phone_mask`: Masks middle digits of phone numbers
+- `credit_card_mask`: Shows first/last 4 digits only
+- `anonymize`: Replaces with random data
+
+### Multi-Source Sync
+
+Sync from multiple remote servers to a single local database:
+
+**Use Cases:**
+- Consolidating data from multiple branches
+- Merging regional databases
+- Development environment setup
+
+**Configuration (JSON):**
+```json
+{
+  "name": "Multi-Source Consolidation",
+  "mode": {
+    "multi_source": true
+  },
+  "sources": [
+    {
+      "remote_host": "branch1.example.com",
+      "database": "sales_db",
+      "user": "postgres",
+      "password": "pass1"
+    },
+    {
+      "remote_host": "branch2.example.com",
+      "database": "sales_db",
+      "user": "postgres",
+      "password": "pass2"
+    }
+  ],
+  "destination": {
+    "database": "consolidated_sales",
+    "host": "localhost",
+    "port": 5432
+  },
+  "options": {
+    "strategy": "latest"
+  }
+}
+```
+
+**Strategies:**
+- `latest`: Use most recent source
+- `merge_all`: Merge all sources (requires conflict resolution)
+
+### Point-in-Time Recovery (PITR)
+
+WAL-based recovery to specific timestamps:
+
+**Setup Steps:**
+
+1. **Configure WAL Archiving:**
+```bash
+# Edit postgresql.conf
+wal_level = replica
+archive_mode = on
+archive_command = 'test ! -f /path/to/wal_archives/%f && cp %p /path/to/wal_archives/%f'
+
+# Restart PostgreSQL
+sudo systemctl restart postgresql
+```
+
+2. **Create Base Backup:**
+```bash
+bash sync_database --database mydb \
+  --source-password 'pass' \
+  --pitr-base-backup
+```
+
+3. **Restore to Point in Time:**
+```bash
+bash sync_database --database mydb \
+  --pitr-restore '2025-01-17 14:30:00'
+```
+
+**Configuration (JSON):**
+```json
+"global_options": {
+  "pitr": {
+    "enabled": true,
+    "wal_archive_dir": "./data/wal_archives",
+    "base_backup_dir": "./data/base_backups"
+  }
+}
+```
+
+**Note:** PITR requires:
+- Continuous WAL archiving enabled on source database
+- Regular base backups
+- Sufficient storage for WAL archives
+
 ## ⏰ Scheduling with Cron
 
 Add to crontab (`crontab -e`):
@@ -599,15 +943,28 @@ Add to crontab (`crontab -e`):
 
 ```
 .
-├── sync_database                # Main sync script
-├── sync_database_runner         # Multi-database runner
-├── sync_database.json           # Your configuration
-├── example_sync_database.json   # Example configurations
-├── README.MD                    # This file
+├── sync_database                  # Main sync script
+├── sync_database_runner           # Multi-database runner
+├── sync_database.json             # Your configuration
+├── sync_database_example.json     # Example configuration with all features
+├── example_sync_database.json     # Basic example configurations
+├── README.md                      # This file
+│
+├── Feature Modules (sourced by main script):
+├── health_checks                  # Database health monitoring
+├── retention_policies             # GFS backup rotation
+├── alerting                       # Multi-channel alerting system
+├── streaming                      # Zero-disk streaming dumps
+├── data_masking                   # Sensitive data masking
+├── multi_source                   # Multi-source sync (simplified)
+├── pitr                           # Point-in-Time Recovery (simplified)
+│
 └── data/
-    └── dumps/                   # Dump files location
-        ├── sync.log             # Log file
-        └── dbname_*.dump        # Database dumps
+    ├── dumps/                     # Dump files location
+    │   ├── sync.log               # Log file
+    │   └── dbname_*.dump          # Database dumps
+    ├── wal_archives/              # WAL archives for PITR
+    └── base_backups/              # Base backups for PITR
 ```
 
 ## 🔍 Command Line Options
@@ -615,39 +972,67 @@ Add to crontab (`crontab -e`):
 ### sync_database
 
 ```
-Options:
-  --database NAME            Source database name
-  --exclude TABLES           Comma-separated list of tables to exclude
-  --exclude-schema SCHEMAS   Comma-separated list of schemas to exclude
+Basic Options:
+  --database NAME              Source database name
+  --exclude TABLES             Comma-separated list of tables to exclude
+  --exclude-schema SCHEMAS     Comma-separated list of schemas to exclude
+  --local-clone                Enable local database cloning mode (no SSH)
+  --help                       Show help message
 
-Remote Server Options:
-  --remote-user USER         SSH username
-  --remote-ip IP             SSH server IP (required)
-  --remote-port PORT         SSH port (default: 22)
+Remote Server Options (for remote sync):
+  --remote-user USER           SSH username
+  --remote-ip IP               SSH server IP (required for remote sync)
+  --remote-port PORT           SSH port (default: 22)
 
 Source Database Options:
-  --source-host HOST         Source DB host on remote server (default: localhost)
-  --source-port PORT         Source DB port (default: 5432)
-  --source-user USER         Source DB username (default: postgres)
-  --source-password PASS     Source DB password (required)
+  --source-host HOST           Source DB host (default: localhost)
+  --source-port PORT           Source DB port (default: 5432)
+  --source-user USER           Source DB username (default: postgres)
+  --source-password PASS       Source DB password (required)
 
 Destination Database Options:
-  --restore                  Automatically restore after sync
-  --dest-database NAME       Destination DB name (default: same as source)
-  --dest-host HOST           Destination DB host (default: localhost)
-  --dest-port PORT           Destination DB port (default: 5432)
-  --dest-user USER           Destination DB username (default: postgres)
-  --dest-password PASS       Destination DB password (required for restore)
+  --restore                    Automatically restore after sync
+  --dest-database NAME         Destination DB name (default: same as source)
+  --dest-host HOST             Destination DB host (default: localhost)
+  --dest-port PORT             Destination DB port (default: 5432)
+  --dest-user USER             Destination DB username (default: postgres)
+  --dest-password PASS         Destination DB password (required for restore)
 
 Compression Options:
-  --compression TYPE         Compression type: gzip, xz, bzip2, none (default: gzip)
-  --compression-level LEVEL  Compression level 1-9 (default: 6)
-  --pg-compression LEVEL     PostgreSQL dump compression 0-9 (default: 6)
+  --compression TYPE           Compression type: gzip, xz, bzip2, none (default: gzip)
+  --compression-level LEVEL    Compression level 1-9 (default: 6)
+  --pg-compression LEVEL       PostgreSQL dump compression 0-9 (default: 6)
 
 Dump Management:
-  --keep-dumps N             Keep only last N dumps, delete older ones (default: 0, keep all)
+  --keep-dumps N               Keep only last N dumps, delete older ones (default: 0)
 
-  --help                     Show help message
+Health Check Options:
+  --health-check               Enable health checks (default: enabled)
+  --no-health-check            Disable health checks
+  --health-check-pre           Run health checks before sync
+  --health-check-post          Run health checks after sync
+
+Retention Policy Options:
+  --retention-policy STRATEGY  Enable retention policy (default: gfs)
+  --retention-daily N          Keep N daily backups (default: 7)
+  --retention-weekly N         Keep N weekly backups (default: 4)
+  --retention-monthly N        Keep N monthly backups (default: 12)
+  --retention-yearly N         Keep N yearly backups (default: 3)
+
+Alerting Options:
+  --alert-webhook URL          Webhook URL for alerts
+  --alert-email EMAIL          Email address for alerts
+  --alert-severity LEVEL       Minimum alert severity: info, warning, error, critical
+
+Advanced Options:
+  --streaming                  Enable streaming dumps (zero-disk mode)
+  --no-progress                Disable progress monitoring in streaming mode
+  --data-masking               Enable data masking for sensitive information
+  --masking-rules FILE         JSON file with custom masking rules
+
+PITR Options:
+  --pitr-base-backup           Create a base backup for PITR
+  --pitr-restore TIME          Restore to specific point in time
 ```
 
 ## 🔒 Security Considerations
@@ -772,6 +1157,19 @@ For issues and questions:
 - Open an issue on GitHub
 
 ## 🔄 Changelog
+
+### Version 2.2.0 (2025-10-17)
+- **NEW**: Health Checks - Database monitoring (connection, disk, replication, queries, locks, bloat)
+- **NEW**: Retention Policies - GFS (Grandfather-Father-Son) backup rotation strategy
+- **NEW**: Alerting System - Multi-channel alerts (Telegram, Webhook, Email) with severity levels
+- **NEW**: Streaming Dumps - Zero-disk streaming for large databases
+- **NEW**: Data Masking - Mask sensitive data (emails, phones, credit cards, SSN)
+- **NEW**: Multi-Source Sync - Consolidate from multiple remote servers
+- **NEW**: Point-in-Time Recovery (PITR) - WAL-based recovery to specific timestamps
+- Enhanced JSON configuration with all features configurable
+- Modular architecture with separate feature files
+- Improved error handling and logging
+- Comprehensive documentation for advanced features
 
 ### Version 2.1.0 (2025-01-17)
 - **NEW**: Added local database cloning (`--local-clone` flag)

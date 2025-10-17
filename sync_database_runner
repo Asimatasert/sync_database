@@ -142,6 +142,37 @@ sync_database() {
         keep_dumps=$(jq -r '.global_options.keep_dumps // 0' "$CONFIG_FILE")
     fi
 
+    # Extract health check options
+    local health_check_enabled=$(echo "$db_config" | jq -r '.options.health_checks.enabled // empty')
+    if [ -z "$health_check_enabled" ]; then
+        health_check_enabled=$(jq -r '.global_options.health_checks.enabled // true' "$CONFIG_FILE")
+    fi
+    local health_check_pre=$(jq -r '.global_options.health_checks.pre_sync // true' "$CONFIG_FILE")
+    local health_check_post=$(jq -r '.global_options.health_checks.post_sync // false' "$CONFIG_FILE")
+
+    # Extract retention policy options
+    local retention_enabled=$(echo "$db_config" | jq -r '.options.retention_policy.enabled // empty')
+    if [ -z "$retention_enabled" ]; then
+        retention_enabled=$(jq -r '.global_options.retention_policy.enabled // false' "$CONFIG_FILE")
+    fi
+    local retention_strategy=$(jq -r '.global_options.retention_policy.strategy // "gfs"' "$CONFIG_FILE")
+    local retention_daily=$(jq -r '.global_options.retention_policy.daily // 7' "$CONFIG_FILE")
+    local retention_weekly=$(jq -r '.global_options.retention_policy.weekly // 4' "$CONFIG_FILE")
+    local retention_monthly=$(jq -r '.global_options.retention_policy.monthly // 12' "$CONFIG_FILE")
+    local retention_yearly=$(jq -r '.global_options.retention_policy.yearly // 3' "$CONFIG_FILE")
+
+    # Extract alerting options
+    local alert_webhook_url=$(jq -r '.global_options.alerting.webhook.url // ""' "$CONFIG_FILE")
+    local alert_email=$(jq -r '.global_options.alerting.email.to // ""' "$CONFIG_FILE")
+    local alert_severity=$(jq -r '.global_options.alerting.min_severity // "warning"' "$CONFIG_FILE")
+
+    # Extract streaming options
+    local streaming_enabled=$(echo "$db_config" | jq -r '.options.streaming // false')
+
+    # Extract data masking options
+    local data_masking_enabled=$(echo "$db_config" | jq -r '.options.data_masking.enabled // false')
+    local masking_rules=$(echo "$db_config" | jq -r '.options.data_masking.rules_file // ""')
+
     # Build command
     local cmd="bash $SYNC_SCRIPT"
     cmd="$cmd --database '$src_db'"
@@ -207,6 +238,50 @@ sync_database() {
     # Add keep_dumps option
     if [ "$keep_dumps" -gt 0 ]; then
         cmd="$cmd --keep-dumps $keep_dumps"
+    fi
+
+    # Add health check options
+    if [ "$health_check_enabled" = "false" ]; then
+        cmd="$cmd --no-health-check"
+    fi
+    if [ "$health_check_pre" = "true" ]; then
+        cmd="$cmd --health-check-pre"
+    fi
+    if [ "$health_check_post" = "true" ]; then
+        cmd="$cmd --health-check-post"
+    fi
+
+    # Add retention policy options
+    if [ "$retention_enabled" = "true" ]; then
+        cmd="$cmd --retention-policy \"$retention_strategy\""
+        cmd="$cmd --retention-daily $retention_daily"
+        cmd="$cmd --retention-weekly $retention_weekly"
+        cmd="$cmd --retention-monthly $retention_monthly"
+        cmd="$cmd --retention-yearly $retention_yearly"
+    fi
+
+    # Add alerting options
+    if [ -n "$alert_webhook_url" ]; then
+        cmd="$cmd --alert-webhook \"$alert_webhook_url\""
+    fi
+    if [ -n "$alert_email" ]; then
+        cmd="$cmd --alert-email \"$alert_email\""
+    fi
+    if [ -n "$alert_severity" ]; then
+        cmd="$cmd --alert-severity \"$alert_severity\""
+    fi
+
+    # Add streaming option
+    if [ "$streaming_enabled" = "true" ]; then
+        cmd="$cmd --streaming"
+    fi
+
+    # Add data masking options
+    if [ "$data_masking_enabled" = "true" ]; then
+        cmd="$cmd --data-masking"
+        if [ -n "$masking_rules" ]; then
+            cmd="$cmd --masking-rules \"$masking_rules\""
+        fi
     fi
 
     # Execute command
