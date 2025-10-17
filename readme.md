@@ -189,7 +189,7 @@ jq --version
 1. Clone the repository:
 ```bash
 git clone https://github.com/Asimatasert/sync_database.git
-cd postgres-sync-tool
+cd sync_database
 ```
 
 2. Make scripts executable:
@@ -497,16 +497,16 @@ Add to crontab (`crontab -e`):
 
 ```bash
 # Daily at 2 AM
-0 2 * * * cd /path/to/postgres-sync-tool && bash sync_database_runner >> ./data/dumps/cron.log 2>&1
+0 2 * * * cd /path/to/sync_database && bash sync_database_runner >> ./data/dumps/cron.log 2>&1
 
 # Every 6 hours
-0 */6 * * * cd /path/to/postgres-sync-tool && bash sync_database_runner
+0 */6 * * * cd /path/to/sync_database && bash sync_database_runner
 
 # Every Sunday at 3 AM
-0 3 * * 0 cd /path/to/postgres-sync-tool && bash sync_database_runner
+0 3 * * 0 cd /path/to/sync_database && bash sync_database_runner
 
 # Weekdays at 1 AM
-0 1 * * 1-5 cd /path/to/postgres-sync-tool && bash sync_database_runner
+0 1 * * 1-5 cd /path/to/sync_database && bash sync_database_runner
 ```
 
 ## 📂 File Structure
