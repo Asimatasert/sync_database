@@ -109,6 +109,29 @@ bash sync_database \
       "enabled": true,
       "bot_token": "123456789:ABCdefGHIjklMNOpqrsTUVwxyz",
       "chat_id": "-1001234567890"
+    },
+    "health_checks": {
+      "enabled": true,
+      "pre_sync": true,
+      "post_sync": false
+    },
+    "retention_policy": {
+      "enabled": false,
+      "strategy": "gfs",
+      "daily": 7,
+      "weekly": 4,
+      "monthly": 12,
+      "yearly": 3
+    },
+    "alerting": {
+      "webhook": {
+        "url": "https://hooks.example.com/alerts"
+      },
+      "email": {
+        "enabled": false,
+        "to": "admin@example.com"
+      },
+      "min_severity": "warning"
     }
   },
   "databases": [
@@ -266,6 +289,22 @@ bash sync_database_runner /path/to/custom_config.json
 
 ## Advanced Examples
 
+### Local Database Cloning (NEW in v2.1.0)
+Clone a database on localhost without SSH:
+
+```bash
+# Same cluster - credentials auto-inherited
+bash sync_database --local-clone \
+  --database 'production' \
+  --source-password 'prod_pass' \
+  --dest-database 'production_backup'
+
+# Different clusters - explicit credentials
+bash sync_database --local-clone \
+  --database 'mydb' --source-port 5432 --source-password 'pass1' \
+  --dest-database 'mydb_copy' --dest-port 5433 --dest-password 'pass2'
+```
+
 ### With Keep Dumps (Keep Last 5 Dumps)
 ```bash
 bash sync_database \
@@ -312,6 +351,103 @@ bash sync_database \
   --remote-ip '192.168.1.100' \
   --exclude "logs,sessions" \
   --exclude-schema "temp,audit"
+```
+
+### Health Checks (NEW in v2.2.0)
+Enable pre-sync and post-sync health checks:
+
+```bash
+bash sync_database \
+  --database 'mydb' \
+  --source-password 'password' \
+  --remote-ip '192.168.1.100' \
+  --health-check-pre \
+  --health-check-post \
+  --restore
+```
+
+### GFS Retention Policy (NEW in v2.2.0)
+Use Grandfather-Father-Son backup rotation:
+
+```bash
+bash sync_database \
+  --database 'critical_db' \
+  --source-password 'password' \
+  --remote-ip '192.168.1.100' \
+  --retention-policy gfs \
+  --retention-daily 7 \
+  --retention-weekly 4 \
+  --retention-monthly 12 \
+  --retention-yearly 3
+```
+
+### Alerting (NEW in v2.2.0)
+Send alerts to webhook and email:
+
+```bash
+bash sync_database \
+  --database 'mydb' \
+  --source-password 'password' \
+  --remote-ip '192.168.1.100' \
+  --alert-webhook "https://hooks.example.com/alerts" \
+  --alert-email "admin@example.com" \
+  --alert-severity warning \
+  --restore
+```
+
+### Streaming Dumps (NEW in v2.2.0)
+Zero-disk streaming for large databases:
+
+```bash
+bash sync_database \
+  --database 'large_db' \
+  --source-password 'password' \
+  --remote-ip '192.168.1.100' \
+  --streaming \
+  --restore
+```
+
+### Data Masking (NEW in v2.2.0)
+Mask sensitive data for development:
+
+```bash
+# Default masking
+bash sync_database \
+  --database 'prod_db' \
+  --source-password 'password' \
+  --remote-ip '192.168.1.100' \
+  --data-masking \
+  --restore
+
+# Custom masking rules
+bash sync_database \
+  --database 'prod_db' \
+  --source-password 'password' \
+  --remote-ip '192.168.1.100' \
+  --data-masking \
+  --masking-rules "./masking_rules.json" \
+  --restore
+```
+
+### All Features Combined
+Production-grade sync with all v2.2.0 features:
+
+```bash
+bash sync_database \
+  --database 'critical_db' \
+  --source-password 'prod_pass' \
+  --remote-ip '192.168.1.100' \
+  --restore \
+  --dest-password 'local_pass' \
+  --exclude "audit_logs,sessions" \
+  --compression gzip \
+  --compression-level 9 \
+  --health-check-pre \
+  --health-check-post \
+  --retention-policy gfs \
+  --retention-daily 7 \
+  --alert-webhook "https://hooks.example.com/alerts" \
+  --alert-email "admin@example.com"
 ```
 
 ---

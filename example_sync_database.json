@@ -178,15 +178,167 @@
         "exclude_tables": ["cache"],
         "keep_dumps": 3
       }
+    },
+    {
+      "name": "Large Database - With Streaming (Zero Disk Usage)",
+      "enabled": false,
+      "source": {
+        "database": "large_db",
+        "host": "localhost",
+        "port": 5432,
+        "user": "postgres",
+        "password": "source_password"
+      },
+      "remote": {
+        "ssh_user": "your_ssh_user",
+        "ssh_host": "192.168.1.100",
+        "ssh_port": 22
+      },
+      "destination": {
+        "database": "large_db_local",
+        "host": "localhost",
+        "port": 5432,
+        "user": "postgres",
+        "password": "dest_password",
+        "restore": true
+      },
+      "options": {
+        "exclude_tables": [],
+        "streaming": true,
+        "compression": {
+          "enabled": true,
+          "type": "gzip",
+          "level": 6,
+          "pg_dump_level": 6
+        }
+      }
+    },
+    {
+      "name": "Production with Data Masking - For Development",
+      "enabled": false,
+      "source": {
+        "database": "prod_customer_db",
+        "host": "localhost",
+        "port": 5432,
+        "user": "postgres",
+        "password": "source_password"
+      },
+      "remote": {
+        "ssh_user": "your_ssh_user",
+        "ssh_host": "192.168.1.100",
+        "ssh_port": 22
+      },
+      "destination": {
+        "database": "dev_customer_db",
+        "host": "localhost",
+        "port": 5432,
+        "user": "postgres",
+        "password": "dest_password",
+        "restore": true
+      },
+      "options": {
+        "exclude_tables": ["audit_logs", "payment_logs"],
+        "data_masking": {
+          "enabled": true,
+          "rules_file": "./masking_rules_customer.json"
+        },
+        "compression": {
+          "enabled": true,
+          "type": "gzip",
+          "level": 6,
+          "pg_dump_level": 6
+        },
+        "keep_dumps": 2
+      }
+    },
+    {
+      "name": "Critical Database - With GFS Retention",
+      "enabled": false,
+      "source": {
+        "database": "critical_db",
+        "host": "localhost",
+        "port": 5432,
+        "user": "postgres",
+        "password": "source_password"
+      },
+      "remote": {
+        "ssh_user": "your_ssh_user",
+        "ssh_host": "192.168.1.100",
+        "ssh_port": 22
+      },
+      "destination": {
+        "database": "critical_db_backup",
+        "host": "localhost",
+        "port": 5432,
+        "user": "postgres",
+        "password": "dest_password",
+        "restore": true
+      },
+      "options": {
+        "exclude_tables": [],
+        "compression": {
+          "enabled": true,
+          "type": "gzip",
+          "level": 9,
+          "pg_dump_level": 9
+        },
+        "health_checks": {
+          "enabled": true
+        },
+        "retention_policy": {
+          "enabled": true
+        }
+      }
     }
   ],
   "global_options": {
     "log_file": "./data/dumps/sync.log",
     "keep_dumps": 3,
+
     "telegram": {
       "enabled": true,
       "bot_token": "123456789:ABCdefGHIjklMNOpqrsTUVwxyz",
       "chat_id": "987654321"
+    },
+
+    "health_checks": {
+      "enabled": true,
+      "pre_sync": true,
+      "post_sync": false,
+      "connection_timeout": 10,
+      "disk_space_threshold": 80,
+      "replication_lag_threshold": 10,
+      "long_query_threshold": 300,
+      "lock_wait_threshold": 5,
+      "bloat_threshold": 30
+    },
+
+    "retention_policy": {
+      "enabled": false,
+      "strategy": "gfs",
+      "daily": 7,
+      "weekly": 4,
+      "monthly": 12,
+      "yearly": 3
+    },
+
+    "alerting": {
+      "webhook": {
+        "url": "",
+        "headers": {
+          "Authorization": "Bearer YOUR_TOKEN"
+        }
+      },
+      "email": {
+        "enabled": false,
+        "smtp_host": "smtp.gmail.com",
+        "smtp_port": 587,
+        "smtp_user": "your-email@gmail.com",
+        "smtp_password": "your-app-password",
+        "from": "alerts@yourdomain.com",
+        "to": "admin@yourdomain.com"
+      },
+      "min_severity": "warning"
     }
   }
 }
