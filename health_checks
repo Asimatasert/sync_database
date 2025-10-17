@@ -3,11 +3,14 @@
 # health_checks.sh - PostgreSQL Health Check Functions
 # Sourced by sync_database script
 
-# Health check thresholds (can be overridden in JSON)
-HEALTH_CHECK_DISK_MIN_GB=10
-HEALTH_CHECK_REPLICATION_LAG_MAX_SEC=300
-HEALTH_CHECK_TABLE_BLOAT_MAX_PERCENT=50
-HEALTH_CHECK_LONG_QUERY_MAX_SEC=300
+# Health check thresholds (can be overridden from JSON config or command line)
+# These will be loaded from JSON if available, otherwise use these defaults
+HEALTH_CHECK_CONNECTION_TIMEOUT=${HEALTH_CHECK_CONNECTION_TIMEOUT:-10}
+HEALTH_CHECK_DISK_MIN_GB=${HEALTH_CHECK_DISK_MIN_GB:-10}
+HEALTH_CHECK_REPLICATION_LAG_MAX_SEC=${HEALTH_CHECK_REPLICATION_LAG_MAX_SEC:-300}
+HEALTH_CHECK_TABLE_BLOAT_MAX_PERCENT=${HEALTH_CHECK_TABLE_BLOAT_MAX_PERCENT:-50}
+HEALTH_CHECK_LONG_QUERY_MAX_SEC=${HEALTH_CHECK_LONG_QUERY_MAX_SEC:-300}
+HEALTH_CHECK_LOCK_WAIT_THRESHOLD=${HEALTH_CHECK_LOCK_WAIT_THRESHOLD:-5}
 
 # Health check result storage
 HEALTH_CHECK_RESULTS=()
@@ -57,8 +60,9 @@ check_connection() {
 
     echo -e "${HC_YELLOW}Checking database connection ($check_prefix)...${HC_NC}"
 
-    # Try to connect and run a simple query
-    local result=$(PGPASSWORD="$db_password" psql -U "$db_user" -h "$db_host" -p "$db_port" -t -c "SELECT 1" postgres 2>&1)
+    # Try to connect and run a simple query with timeout
+    # PGCONNECT_TIMEOUT: connection timeout in seconds (default 10)
+    local result=$(PGPASSWORD="$db_password" PGCONNECT_TIMEOUT="$HEALTH_CHECK_CONNECTION_TIMEOUT" psql -U "$db_user" -h "$db_host" -p "$db_port" -t -c "SELECT 1" postgres 2>&1)
 
     if [ $? -eq 0 ]; then
         log_health_check "pass" "${check_prefix} Connection" "Connection successful" "info"
@@ -69,22 +73,36 @@ check_connection() {
     fi
 }
 
-# 2. Disk Space Check
+# 2. Disk Space Check (Multi-platform support)
 check_disk_space() {
     local target_dir=$1
     local check_prefix=$2
 
     echo -e "${HC_YELLOW}Checking disk space for $target_dir...${HC_NC}"
 
-    # Get disk usage in GB
-    local available_gb=$(df -BG "$target_dir" 2>/dev/null | tail -1 | awk '{print $4}' | sed 's/G//')
+    local available_gb=""
 
+    # Try GNU coreutils format (Linux)
     if [ -z "$available_gb" ]; then
-        # Try macOS format
+        available_gb=$(df -BG "$target_dir" 2>/dev/null | tail -1 | awk '{print $4}' | sed 's/G//')
+    fi
+
+    # Try BSD format with -g flag (macOS, FreeBSD)
+    if [ -z "$available_gb" ] || [ "$available_gb" = "0" ]; then
         available_gb=$(df -g "$target_dir" 2>/dev/null | tail -1 | awk '{print $4}')
     fi
 
-    if [ -n "$available_gb" ]; then
+    # Try POSIX format - convert 1K blocks to GB (Universal fallback)
+    if [ -z "$available_gb" ] || [ "$available_gb" = "0" ]; then
+        local blocks=$(df "$target_dir" 2>/dev/null | tail -1 | awk '{print $4}')
+        if [ -n "$blocks" ] && [ "$blocks" -gt 0 ]; then
+            # Convert 1K blocks to GB (blocks / 1024 / 1024)
+            available_gb=$(awk "BEGIN {printf \"%.0f\", $blocks/1024/1024}")
+        fi
+    fi
+
+    # Final validation
+    if [ -n "$available_gb" ] && [ "$available_gb" -gt 0 ]; then
         if [ "$available_gb" -lt "$HEALTH_CHECK_DISK_MIN_GB" ]; then
             log_health_check "fail" "${check_prefix} Disk Space" "Only ${available_gb}GB available (minimum: ${HEALTH_CHECK_DISK_MIN_GB}GB)" "error"
             return 1
@@ -93,7 +111,7 @@ check_disk_space() {
             return 0
         fi
     else
-        log_health_check "skip" "${check_prefix} Disk Space" "Unable to check disk space" "warning"
+        log_health_check "skip" "${check_prefix} Disk Space" "Unable to check disk space (OS not supported)" "warning"
         return 0
     fi
 }
@@ -184,10 +202,10 @@ check_lock_waits() {
     " postgres 2>/dev/null | xargs)
 
     if [ -n "$lock_wait_count" ]; then
-        if [ "$lock_wait_count" -gt 0 ]; then
-            log_health_check "warn" "${check_prefix} Lock Waits" "${lock_wait_count} queries waiting for locks" "warning"
+        if [ "$lock_wait_count" -ge "$HEALTH_CHECK_LOCK_WAIT_THRESHOLD" ]; then
+            log_health_check "warn" "${check_prefix} Lock Waits" "${lock_wait_count} queries waiting for locks (threshold: ${HEALTH_CHECK_LOCK_WAIT_THRESHOLD})" "warning"
         else
-            log_health_check "pass" "${check_prefix} Lock Waits" "No lock waits detected" "info"
+            log_health_check "pass" "${check_prefix} Lock Waits" "${lock_wait_count} lock waits (below threshold)" "info"
         fi
         return 0
     else

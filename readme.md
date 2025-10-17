@@ -408,7 +408,7 @@ If no config file is specified, it uses `sync_database.json` by default.
 | `options.compression.type` | string | No | Compression type: gzip, xz, bzip2, none (default: gzip) |
 | `options.compression.level` | number | No | Compression level 1-9 (default: 6) |
 | `options.compression.pg_dump_level` | number | No | PostgreSQL dump compression 0-9 (default: 6) |
-| `options.keep_dumps` | number | No | Keep only last N dumps (overrides global setting) |
+| `options.keep_dumps` | number | No | Keep dump policy: -1=keep all, 0=keep none, N=keep last N (overrides global setting) |
 
 **Important Notes:**
 - When `mode.local_clone` is `true`, the `remote` section is not needed
@@ -420,7 +420,7 @@ If no config file is specified, it uses `sync_database.json` by default.
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `global_options.log_file` | string | No | Log file path (default: ./data/dumps/sync.log) |
-| `global_options.keep_dumps` | number | No | Default keep dumps for all databases (default: 3) |
+| `global_options.keep_dumps` | number | No | Default keep dump policy: -1=keep all, 0=keep none, N=keep last N (default: -1) |
 | `global_options.telegram.enabled` | boolean | No | Enable Telegram notifications (default: false) |
 | `global_options.telegram.bot_token` | string | Conditional | Telegram bot token (required if enabled) |
 | `global_options.telegram.chat_id` | string | Conditional | Telegram chat ID (required if enabled) |
@@ -1004,7 +1004,7 @@ Compression Options:
   --pg-compression LEVEL       PostgreSQL dump compression 0-9 (default: 6)
 
 Dump Management:
-  --keep-dumps N               Keep only last N dumps, delete older ones (default: 0)
+  --keep-dumps N               Keep dump policy: -1=keep all, 0=keep none, N=keep last N (default: -1)
 
 Health Check Options:
   --health-check               Enable health checks (default: enabled)

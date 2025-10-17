@@ -13,6 +13,7 @@ STREAMING_SHOW_PROGRESS=true
 STREAM_GREEN='\033[0;32m'
 STREAM_YELLOW='\033[1;33m'
 STREAM_BLUE='\033[0;34m'
+STREAM_RED='\033[0;31m'
 STREAM_NC='\033[0m'
 
 # Function to check if pv (pipe viewer) is available

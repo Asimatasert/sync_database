@@ -5,7 +5,6 @@
 
 # Alert settings
 ALERTING_ENABLED=false
-ALERT_CHANNELS=""  # Comma-separated: telegram,webhook,email
 
 # Telegram settings (inherited from main script or set here)
 ALERT_TELEGRAM_ENABLED=false
@@ -16,6 +15,7 @@ ALERT_TELEGRAM_CHAT_ID=""
 ALERT_WEBHOOK_ENABLED=false
 ALERT_WEBHOOK_URL=""
 ALERT_WEBHOOK_METHOD="POST"
+ALERT_WEBHOOK_HEADERS=""  # JSON string with custom headers (loaded from config)
 
 # Email settings (using sendmail or mail command)
 ALERT_EMAIL_ENABLED=false
@@ -127,10 +127,24 @@ send_webhook_alert() {
 EOF
 )
 
+    # Build curl command with headers
+    local curl_cmd="curl -s -X $ALERT_WEBHOOK_METHOD \"$ALERT_WEBHOOK_URL\" -H \"Content-Type: application/json\""
+
+    # Add custom headers if provided
+    if [ -n "$ALERT_WEBHOOK_HEADERS" ]; then
+        # Parse JSON headers and add them to curl command
+        # Expected format: {"Authorization": "Bearer TOKEN", "X-Custom": "value"}
+        while IFS= read -r header_line; do
+            if [ -n "$header_line" ]; then
+                curl_cmd="$curl_cmd -H \"$header_line\""
+            fi
+        done < <(echo "$ALERT_WEBHOOK_HEADERS" | jq -r 'to_entries | .[] | "\(.key): \(.value)"' 2>/dev/null)
+    fi
+
+    curl_cmd="$curl_cmd -d '$json_payload'"
+
     # Send webhook
-    local response=$(curl -s -X "$ALERT_WEBHOOK_METHOD" "$ALERT_WEBHOOK_URL" \
-        -H "Content-Type: application/json" \
-        -d "$json_payload" 2>&1)
+    local response=$(eval "$curl_cmd" 2>&1)
 
     if [ $? -eq 0 ]; then
         echo -e "${ALERT_GREEN}✓ Webhook alert sent${ALERT_NC}"

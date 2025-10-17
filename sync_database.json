@@ -3,11 +3,52 @@
   ],
   "global_options": {
     "log_file": "./data/dumps/sync.log",
-    "keep_dumps": 3,
+    "keep_dumps": -1,
+
     "telegram": {
       "enabled": false,
       "bot_token": "YOUR_TELEGRAM_BOT_TOKEN",
       "chat_id": "YOUR_TELEGRAM_CHAT_ID"
+    },
+
+    "health_checks": {
+      "enabled": true,
+      "pre_sync": true,
+      "post_sync": false,
+      "connection_timeout": 10,
+      "disk_space_threshold": 10,
+      "replication_lag_threshold": 300,
+      "long_query_threshold": 300,
+      "lock_wait_threshold": 5,
+      "bloat_threshold": 50
+    },
+
+    "retention_policy": {
+      "enabled": false,
+      "strategy": "gfs",
+      "daily": 7,
+      "weekly": 4,
+      "monthly": 12,
+      "yearly": 3
+    },
+
+    "alerting": {
+      "webhook": {
+        "url": "",
+        "headers": {
+          "Authorization": "Bearer YOUR_TOKEN"
+        }
+      },
+      "email": {
+        "enabled": false,
+        "smtp_host": "smtp.gmail.com",
+        "smtp_port": 587,
+        "smtp_user": "your-email@gmail.com",
+        "smtp_password": "your-app-password",
+        "from": "alerts@yourdomain.com",
+        "to": "admin@yourdomain.com"
+      },
+      "min_severity": "warning"
     }
   }
 }

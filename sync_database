@@ -48,7 +48,7 @@ DATABASE="your_database_name"
 EXCLUDE_TABLES=""
 EXCLUDE_SCHEMAS=""
 AUTO_RESTORE=false
-KEEP_DUMPS=0  # 0 means keep all dumps
+KEEP_DUMPS=-1  # -1 means keep all dumps, 0 means keep none, N means keep last N dumps
 LOCAL_CLONE=false  # Clone database on localhost without SSH
 
 # Health check settings
@@ -59,9 +59,9 @@ HEALTH_CHECK_FAIL_ON_ERROR=false
 
 # Compression settings
 COMPRESSION_ENABLED=true
-COMPRESSION_TYPE="gzip"  # gzip, xz, bzip2, none
-COMPRESSION_LEVEL=6      # 1-9 (1=fast, 9=best compression)
-PG_DUMP_COMPRESSION=6    # pg_dump internal compression (0-9, for custom format)
+COMPRESSION_TYPE="gzip"  # External compression: gzip, xz, bzip2, none
+COMPRESSION_LEVEL=6      # External compression level: 1-9 (1=fast, 9=best compression)
+PG_DUMP_COMPRESSION=6    # PostgreSQL internal compression: 0-9 (pg_dump -Z flag, for custom format)
 
 # Source database configuration (where to dump from)
 SOURCE_DB_HOST="localhost"
@@ -115,6 +115,12 @@ load_global_config() {
             ALERT_WEBHOOK_ENABLED=true
             ALERT_WEBHOOK_URL="$webhook_url"
             ALERTING_ENABLED=true
+
+            # Load webhook headers if provided
+            local webhook_headers=$(jq -c '.global_options.alerting.webhook.headers // {}' "$config_file" 2>/dev/null)
+            if [ -n "$webhook_headers" ] && [ "$webhook_headers" != "{}" ] && [ "$webhook_headers" != "null" ]; then
+                ALERT_WEBHOOK_HEADERS="$webhook_headers"
+            fi
         fi
 
         # Load alerting email settings
@@ -147,6 +153,32 @@ load_global_config() {
             HEALTH_CHECK_POST_SYNC=true
         fi
 
+        # Load health check thresholds
+        local conn_timeout=$(jq -r '.global_options.health_checks.connection_timeout // ""' "$config_file" 2>/dev/null)
+        if [ -n "$conn_timeout" ] && [ "$conn_timeout" != "null" ]; then
+            export HEALTH_CHECK_CONNECTION_TIMEOUT="$conn_timeout"
+        fi
+        local disk_threshold=$(jq -r '.global_options.health_checks.disk_space_threshold // ""' "$config_file" 2>/dev/null)
+        if [ -n "$disk_threshold" ] && [ "$disk_threshold" != "null" ]; then
+            export HEALTH_CHECK_DISK_MIN_GB="$disk_threshold"
+        fi
+        local repl_threshold=$(jq -r '.global_options.health_checks.replication_lag_threshold // ""' "$config_file" 2>/dev/null)
+        if [ -n "$repl_threshold" ] && [ "$repl_threshold" != "null" ]; then
+            export HEALTH_CHECK_REPLICATION_LAG_MAX_SEC="$repl_threshold"
+        fi
+        local query_threshold=$(jq -r '.global_options.health_checks.long_query_threshold // ""' "$config_file" 2>/dev/null)
+        if [ -n "$query_threshold" ] && [ "$query_threshold" != "null" ]; then
+            export HEALTH_CHECK_LONG_QUERY_MAX_SEC="$query_threshold"
+        fi
+        local lock_threshold=$(jq -r '.global_options.health_checks.lock_wait_threshold // ""' "$config_file" 2>/dev/null)
+        if [ -n "$lock_threshold" ] && [ "$lock_threshold" != "null" ]; then
+            export HEALTH_CHECK_LOCK_WAIT_THRESHOLD="$lock_threshold"
+        fi
+        local bloat_threshold=$(jq -r '.global_options.health_checks.bloat_threshold // ""' "$config_file" 2>/dev/null)
+        if [ -n "$bloat_threshold" ] && [ "$bloat_threshold" != "null" ]; then
+            export HEALTH_CHECK_TABLE_BLOAT_MAX_PERCENT="$bloat_threshold"
+        fi
+
         # Load retention policy settings
         local retention_enabled=$(jq -r '.global_options.retention_policy.enabled // false' "$config_file" 2>/dev/null)
         if [ "$retention_enabled" = "true" ]; then
@@ -158,10 +190,19 @@ load_global_config() {
             RETENTION_YEARLY=$(jq -r '.global_options.retention_policy.yearly // 3' "$config_file" 2>/dev/null)
         fi
 
+        # Load log_file setting
+        local log_file=$(jq -r '.global_options.log_file // ""' "$config_file" 2>/dev/null)
+        if [ -n "$log_file" ] && [ "$log_file" != "null" ]; then
+            export LOG_FILE="$log_file"
+            # Create log directory if it doesn't exist
+            mkdir -p "$(dirname "$log_file")" 2>/dev/null
+        fi
+
         # Load keep_dumps if not using retention policy
         if [ "$RETENTION_ENABLED" != "true" ]; then
-            local keep_dumps=$(jq -r '.global_options.keep_dumps // 0' "$config_file" 2>/dev/null)
-            if [ "$keep_dumps" -gt 0 ]; then
+            local keep_dumps=$(jq -r '.global_options.keep_dumps // -1' "$config_file" 2>/dev/null)
+            # Accept any valid number: -1 (keep all), 0 (keep none), or N (keep last N)
+            if [ "$keep_dumps" != "null" ] && [ "$keep_dumps" -ge -1 ]; then
                 KEEP_DUMPS="$keep_dumps"
             fi
         fi
@@ -369,12 +410,12 @@ while [[ $# -gt 0 ]]; do
             echo "  --dest-password PASS       Destination DB password (required for restore)"
             echo ""
             echo "Compression Options:"
-            echo "  --compression TYPE         Compression type: gzip, xz, bzip2, none (default: gzip)"
-            echo "  --compression-level LEVEL  Compression level 1-9 (default: 6)"
-            echo "  --pg-compression LEVEL     PostgreSQL dump compression 0-9 (default: 6)"
+            echo "  --compression TYPE         External compression type: gzip, xz, bzip2, none (default: gzip)"
+            echo "  --compression-level LEVEL  External compression level 1-9 (1=fast, 9=best) (default: 6)"
+            echo "  --pg-compression LEVEL     PostgreSQL internal dump compression 0-9 (pg_dump -Z flag) (default: 6)"
             echo ""
             echo "Dump Management:"
-            echo "  --keep-dumps N             Keep only last N dumps, delete older ones (default: 0, keep all)"
+            echo "  --keep-dumps N             Keep dump policy: -1=keep all, 0=keep none, N=keep last N (default: -1)"
             echo ""
             echo "Health Check Options:"
             echo "  --health-check             Enable health checks (default: enabled)"
@@ -582,7 +623,8 @@ else
     DUMP_PATH="$REMOTE_DUMP_PATH"
 fi
 
-PG_DUMP_CMD="PGPASSWORD='$SOURCE_DB_PASSWORD' pg_dump -U $SOURCE_DB_USER -h $SOURCE_DB_HOST -p $SOURCE_DB_PORT -Fc -Z${PG_DUMP_COMPRESSION} -v -f $DUMP_PATH $DATABASE"
+# Build pg_dump command (without password in command line for security)
+PG_DUMP_CMD="pg_dump -U $SOURCE_DB_USER -h $SOURCE_DB_HOST -p $SOURCE_DB_PORT -Fc -Z${PG_DUMP_COMPRESSION} -v -f $DUMP_PATH $DATABASE"
 
 # Add exclude-table options
 if [ -n "$EXCLUDE_TABLES" ]; then
@@ -606,10 +648,16 @@ fi
 
 if [ "$LOCAL_CLONE" = true ]; then
     echo -e "${YELLOW}Step 1/3: Creating database dump locally...${NC}"
+    # Set password via environment variable (more secure than command line)
+    export PGPASSWORD="$SOURCE_DB_PASSWORD"
     eval "$PG_DUMP_CMD"
+    local dump_result=$?
+    unset PGPASSWORD
+    [ $dump_result -eq 0 ] || exit $dump_result
 else
     echo -e "${YELLOW}Step 1/5: Creating database dump on remote server...${NC}"
-    ssh -p ${REMOTE_PORT} ${REMOTE_USER}@${REMOTE_HOST} "$PG_DUMP_CMD"
+    # Pass password via environment variable to remote server
+    ssh -p ${REMOTE_PORT} ${REMOTE_USER}@${REMOTE_HOST} "export PGPASSWORD='$SOURCE_DB_PASSWORD'; $PG_DUMP_CMD; unset PGPASSWORD"
 fi
 
 if [ $? -eq 0 ]; then
@@ -723,35 +771,56 @@ if [ "$RETENTION_ENABLED" = true ]; then
     if command -v manage_retention &> /dev/null; then
         manage_retention "$DATABASE" "$LOCAL_DUMP_DIR"
     fi
-elif [ "$KEEP_DUMPS" -gt 0 ]; then
+elif [ "$KEEP_DUMPS" -ge 0 ]; then
     # Use simple retention (backward compatibility)
     echo ""
-    echo -e "${YELLOW}Cleaning up old dumps (keeping last $KEEP_DUMPS)...${NC}"
 
-    # Find all dump files for this database, sorted by modification time (oldest first)
-    # Pattern: ${DATABASE}_*.dump
-    OLD_DUMPS=$(find "$LOCAL_DUMP_DIR" -name "${DATABASE}_*.dump" -type f -printf '%T+ %p\n' 2>/dev/null | sort | awk '{print $2}')
+    if [ "$KEEP_DUMPS" -eq 0 ]; then
+        echo -e "${YELLOW}Cleaning up all dumps (KEEP_DUMPS=0)...${NC}"
+        # Delete all dumps for this database
+        OLD_DUMPS=$(find "$LOCAL_DUMP_DIR" -name "${DATABASE}_*.dump" -type f 2>/dev/null)
+        TOTAL_DUMPS=$(echo "$OLD_DUMPS" | grep -c "^" 2>/dev/null || echo 0)
 
-    # Count total dumps
-    TOTAL_DUMPS=$(echo "$OLD_DUMPS" | grep -c "^" 2>/dev/null || echo 0)
-
-    if [ "$TOTAL_DUMPS" -gt "$KEEP_DUMPS" ]; then
-        # Calculate how many to delete
-        DELETE_COUNT=$((TOTAL_DUMPS - KEEP_DUMPS))
-
-        echo "Found $TOTAL_DUMPS dumps, deleting oldest $DELETE_COUNT..."
-
-        # Delete oldest dumps
-        echo "$OLD_DUMPS" | head -n "$DELETE_COUNT" | while read -r dump_file; do
-            if [ -f "$dump_file" ]; then
-                echo "  Deleting: $(basename "$dump_file")"
-                rm -f "$dump_file"
-            fi
-        done
-
-        echo -e "${GREEN}✓ Cleanup completed${NC}"
+        if [ "$TOTAL_DUMPS" -gt 0 ]; then
+            echo "Deleting all $TOTAL_DUMPS dump(s)..."
+            echo "$OLD_DUMPS" | while read -r dump_file; do
+                if [ -f "$dump_file" ]; then
+                    echo "  Deleting: $(basename "$dump_file")"
+                    rm -f "$dump_file"
+                fi
+            done
+            echo -e "${GREEN}✓ Cleanup completed${NC}"
+        else
+            echo -e "${GREEN}✓ No dumps found to clean${NC}"
+        fi
     else
-        echo -e "${GREEN}✓ No cleanup needed (found $TOTAL_DUMPS dumps, keeping $KEEP_DUMPS)${NC}"
+        echo -e "${YELLOW}Cleaning up old dumps (keeping last $KEEP_DUMPS)...${NC}"
+
+        # Find all dump files for this database, sorted by modification time (oldest first)
+        # Pattern: ${DATABASE}_*.dump
+        OLD_DUMPS=$(find "$LOCAL_DUMP_DIR" -name "${DATABASE}_*.dump" -type f -printf '%T+ %p\n' 2>/dev/null | sort | awk '{print $2}')
+
+        # Count total dumps
+        TOTAL_DUMPS=$(echo "$OLD_DUMPS" | grep -c "^" 2>/dev/null || echo 0)
+
+        if [ "$TOTAL_DUMPS" -gt "$KEEP_DUMPS" ]; then
+            # Calculate how many to delete
+            DELETE_COUNT=$((TOTAL_DUMPS - KEEP_DUMPS))
+
+            echo "Found $TOTAL_DUMPS dumps, deleting oldest $DELETE_COUNT..."
+
+            # Delete oldest dumps
+            echo "$OLD_DUMPS" | head -n "$DELETE_COUNT" | while read -r dump_file; do
+                if [ -f "$dump_file" ]; then
+                    echo "  Deleting: $(basename "$dump_file")"
+                    rm -f "$dump_file"
+                fi
+            done
+
+            echo -e "${GREEN}✓ Cleanup completed${NC}"
+        else
+            echo -e "${GREEN}✓ No cleanup needed (found $TOTAL_DUMPS dumps, keeping $KEEP_DUMPS)${NC}"
+        fi
     fi
 fi
 
@@ -771,21 +840,26 @@ if [ "$AUTO_RESTORE" = true ]; then
 
     # Check if database exists
     echo -e "${YELLOW}Step 1/3: Checking if database exists...${NC}"
-    DB_EXISTS=$(PGPASSWORD="$DEST_DB_PASSWORD" psql -U "$DEST_DB_USER" -h "$DEST_DB_HOST" -p "$DEST_DB_PORT" -t -c "SELECT 1 FROM pg_database WHERE datname='$DEST_DB_NAME'" postgres 2>/dev/null | xargs)
+
+    # Set password via environment variable for all destination operations
+    export PGPASSWORD="$DEST_DB_PASSWORD"
+
+    DB_EXISTS=$(psql -U "$DEST_DB_USER" -h "$DEST_DB_HOST" -p "$DEST_DB_PORT" -t -c "SELECT 1 FROM pg_database WHERE datname='$DEST_DB_NAME'" postgres 2>/dev/null | xargs)
 
     if [ "$DB_EXISTS" = "1" ]; then
         echo -e "${YELLOW}Database '$DEST_DB_NAME' exists. Terminating active connections...${NC}"
 
         # Terminate all connections to the database
-        PGPASSWORD="$DEST_DB_PASSWORD" psql -U "$DEST_DB_USER" -h "$DEST_DB_HOST" -p "$DEST_DB_PORT" -c "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname='$DEST_DB_NAME' AND pid <> pg_backend_pid();" postgres > /dev/null 2>&1
+        psql -U "$DEST_DB_USER" -h "$DEST_DB_HOST" -p "$DEST_DB_PORT" -c "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname='$DEST_DB_NAME' AND pid <> pg_backend_pid();" postgres > /dev/null 2>&1
 
         echo -e "${YELLOW}Dropping database '$DEST_DB_NAME'...${NC}"
-        PGPASSWORD="$DEST_DB_PASSWORD" dropdb -U "$DEST_DB_USER" -h "$DEST_DB_HOST" -p "$DEST_DB_PORT" "$DEST_DB_NAME" 2>&1
+        dropdb -U "$DEST_DB_USER" -h "$DEST_DB_HOST" -p "$DEST_DB_PORT" "$DEST_DB_NAME" 2>&1
 
         if [ $? -eq 0 ]; then
             echo -e "${GREEN}✓ Database dropped successfully${NC}"
         else
             echo -e "${RED}✗ Failed to drop database${NC}"
+            unset PGPASSWORD
             exit 1
         fi
     else
@@ -794,12 +868,13 @@ if [ "$AUTO_RESTORE" = true ]; then
 
     echo ""
     echo -e "${YELLOW}Step 2/3: Creating database '$DEST_DB_NAME'...${NC}"
-    PGPASSWORD="$DEST_DB_PASSWORD" createdb -U "$DEST_DB_USER" -h "$DEST_DB_HOST" -p "$DEST_DB_PORT" "$DEST_DB_NAME" 2>&1
+    createdb -U "$DEST_DB_USER" -h "$DEST_DB_HOST" -p "$DEST_DB_PORT" "$DEST_DB_NAME" 2>&1
 
     if [ $? -eq 0 ]; then
         echo -e "${GREEN}✓ Database created successfully${NC}"
     else
         echo -e "${RED}✗ Failed to create database${NC}"
+        unset PGPASSWORD
         exit 1
     fi
 
@@ -808,7 +883,7 @@ if [ "$AUTO_RESTORE" = true ]; then
     echo "This may take a while depending on the database size..."
     echo ""
 
-    PGPASSWORD="$DEST_DB_PASSWORD" pg_restore \
+    pg_restore \
         --verbose \
         --no-owner \
         --no-privileges \
@@ -822,6 +897,9 @@ if [ "$AUTO_RESTORE" = true ]; then
         "$LOCAL_DUMP_PATH" 2>&1
 
     RESTORE_EXIT_CODE=${PIPESTATUS[0]}
+
+    # Clear password from environment
+    unset PGPASSWORD
 
     if [ $RESTORE_EXIT_CODE -eq 0 ]; then
         echo ""
@@ -852,5 +930,7 @@ if [ "$AUTO_RESTORE" = true ]; then
 else
     echo ""
     echo "To restore this dump manually, use:"
-    echo "  PGPASSWORD='yourpassword' pg_restore --verbose --no-owner --no-privileges --clean --if-exists -U $DEST_DB_USER -h $DEST_DB_HOST -p $DEST_DB_PORT -d $DEST_DB_NAME \"$LOCAL_DUMP_PATH\""
+    echo "  export PGPASSWORD='yourpassword'"
+    echo "  pg_restore --verbose --no-owner --no-privileges --clean --if-exists -U $DEST_DB_USER -h $DEST_DB_HOST -p $DEST_DB_PORT -d $DEST_DB_NAME \"$LOCAL_DUMP_PATH\""
+    echo "  unset PGPASSWORD"
 fi
