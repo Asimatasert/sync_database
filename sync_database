@@ -623,8 +623,14 @@ else
     DUMP_PATH="$REMOTE_DUMP_PATH"
 fi
 
-# Build pg_dump command (without password in command line for security)
-PG_DUMP_CMD="pg_dump -U $SOURCE_DB_USER -h $SOURCE_DB_HOST -p $SOURCE_DB_PORT -Fc -Z${PG_DUMP_COMPRESSION} -v -f $DUMP_PATH $DATABASE"
+# Build pg_dump command
+# For remote sync: include PGPASSWORD in command (SSH will handle it securely)
+# For local clone: use export/unset pattern
+if [ "$LOCAL_CLONE" = true ]; then
+    PG_DUMP_CMD="pg_dump -U $SOURCE_DB_USER -h $SOURCE_DB_HOST -p $SOURCE_DB_PORT -Fc -Z${PG_DUMP_COMPRESSION} -v -f $DUMP_PATH $DATABASE"
+else
+    PG_DUMP_CMD="PGPASSWORD='$SOURCE_DB_PASSWORD' pg_dump -U $SOURCE_DB_USER -h $SOURCE_DB_HOST -p $SOURCE_DB_PORT -Fc -Z${PG_DUMP_COMPRESSION} -v -f $DUMP_PATH $DATABASE"
+fi
 
 # Add exclude-table options
 if [ -n "$EXCLUDE_TABLES" ]; then
@@ -651,19 +657,19 @@ if [ "$LOCAL_CLONE" = true ]; then
     # Set password via environment variable (more secure than command line)
     export PGPASSWORD="$SOURCE_DB_PASSWORD"
     eval "$PG_DUMP_CMD"
-    local dump_result=$?
+    DUMP_RESULT=$?
     unset PGPASSWORD
-    [ $dump_result -eq 0 ] || exit $dump_result
 else
     echo -e "${YELLOW}Step 1/5: Creating database dump on remote server...${NC}"
-    # Pass password via environment variable to remote server
-    ssh -p ${REMOTE_PORT} ${REMOTE_USER}@${REMOTE_HOST} "export PGPASSWORD='$SOURCE_DB_PASSWORD'; $PG_DUMP_CMD; unset PGPASSWORD"
+    # Execute pg_dump on remote server (PGPASSWORD is already in PG_DUMP_CMD)
+    ssh -p ${REMOTE_PORT} ${REMOTE_USER}@${REMOTE_HOST} "$PG_DUMP_CMD"
+    DUMP_RESULT=$?
 fi
 
-if [ $? -eq 0 ]; then
+if [ $DUMP_RESULT -eq 0 ]; then
     echo -e "${GREEN}✓ Database dump created successfully${NC}"
 else
-    echo -e "${RED}✗ Failed to create database dump${NC}"
+    echo -e "${RED}✗ Failed to create database dump (exit code: $DUMP_RESULT)${NC}"
     exit 1
 fi
 
@@ -672,6 +678,14 @@ if [ "$LOCAL_CLONE" = false ]; then
     echo -e "${YELLOW}Step 2/5: Checking dump file size...${NC}"
     REMOTE_SIZE=$(ssh -p ${REMOTE_PORT} ${REMOTE_USER}@${REMOTE_HOST} "ls -lh $REMOTE_DUMP_PATH | awk '{print \$5}'")
     REMOTE_SIZE_BYTES=$(ssh -p ${REMOTE_PORT} ${REMOTE_USER}@${REMOTE_HOST} "stat -f%z $REMOTE_DUMP_PATH 2>/dev/null || stat -c%s $REMOTE_DUMP_PATH 2>/dev/null")
+
+    # Check if dump file is empty or too small (less than 1KB is suspicious)
+    if [ -z "$REMOTE_SIZE_BYTES" ] || [ "$REMOTE_SIZE_BYTES" -lt 1024 ]; then
+        echo -e "${RED}✗ Dump file is empty or too small (${REMOTE_SIZE_BYTES} bytes)${NC}"
+        echo -e "${RED}This usually indicates a failed pg_dump. Check the error messages above.${NC}"
+        exit 1
+    fi
+
     echo -e "${GREEN}✓ Dump file size: ${REMOTE_SIZE}${NC}"
 
     # Compress on remote server if enabled
