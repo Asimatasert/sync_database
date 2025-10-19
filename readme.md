@@ -456,8 +456,9 @@ If no config file is specified, it uses `sync_database.json` by default.
    ```json
    "telegram": {
      "enabled": true,
-     "bot_token": "123456789:ABCdefGHIjklMNOpqrsTUVwxyz",
-     "chat_id": "987654321"
+     "bot_token": "YOUR_TELEGRAM_BOT_TOKEN",
+     "chat_id": "YOUR_TELEGRAM_CHAT_ID",
+     "authorized_users": ["123456789", "987654321"]
    }
    ```
 
@@ -466,6 +467,44 @@ If no config file is specified, it uses `sync_database.json` by default.
 - ❌ Failure notifications for each database
 - 📊 Summary notification with overall statistics
 - Rich HTML formatting with emojis
+
+### Interactive Telegram Bot Control (NEW in v2.3.0)
+
+Control your database synchronization operations directly from Telegram!
+
+**Setup:**
+```bash
+# Make the bot service executable
+chmod +x telegram_bot_service
+
+# Start the bot (will ask about systemd installation)
+bash telegram_bot_service
+
+# Or install as systemd service for auto-start
+bash telegram_bot_service --install-service
+```
+
+**Bot Commands:**
+- `/start` - Start bot and get welcome message
+- `/help` - Show help menu with all commands
+- `/sync` - Synchronize all active databases
+- `/sync [dbname]` - Synchronize specific database
+- `/status` - Check current sync status
+- `/list` - List all configured databases
+- `/logs [N]` - Show last N lines of log (default: 20)
+- `/stop` - Stop running sync operation
+
+**Features:**
+- 🔐 **Authorized Users**: Only specified users can control the bot
+- 🚀 **Remote Control**: Start sync operations from anywhere
+- 📊 **Real-time Status**: Instant status monitoring
+- 📝 **Log Access**: View logs directly from Telegram
+- 🛑 **Operation Control**: Stop running operations
+- ✅ **Auto Notifications**: Automatic sync completion notifications
+
+**Documentation:**
+- See [TELEGRAM_BOT_SETUP.md](TELEGRAM_BOT_SETUP.md) for complete setup guide
+- See [QUICKSTART_TELEGRAM.md](QUICKSTART_TELEGRAM.md) for quick start guide
 
 ## 📚 Examples
 
@@ -945,10 +984,15 @@ Add to crontab (`crontab -e`):
 .
 ├── sync_database                  # Main sync script
 ├── sync_database_runner           # Multi-database runner
+├── telegram_bot_service           # Interactive Telegram bot for remote control
+├── telegram-bot-sync.service      # Systemd service file for bot
 ├── sync_database.json             # Your configuration
 ├── sync_database_example.json     # Example configuration with all features
 ├── example_sync_database.json     # Basic example configurations
+├── example_scripts.md             # Example usage scripts and crontab
 ├── README.md                      # This file
+├── TELEGRAM_BOT_SETUP.md          # Complete Telegram bot setup guide
+├── QUICKSTART_TELEGRAM.md         # Quick start guide for Telegram bot
 │
 ├── Feature Modules (sourced by main script):
 ├── health_checks                  # Database health monitoring
@@ -962,6 +1006,7 @@ Add to crontab (`crontab -e`):
 └── data/
     ├── dumps/                     # Dump files location
     │   ├── sync.log               # Log file
+    │   ├── telegram_bot.log       # Telegram bot log file
     │   └── dbname_*.dump          # Database dumps
     ├── wal_archives/              # WAL archives for PITR
     └── base_backups/              # Base backups for PITR
@@ -1157,6 +1202,19 @@ For issues and questions:
 - Open an issue on GitHub
 
 ## 🔄 Changelog
+
+### Version 2.3.0 (2025-01-19)
+- **NEW**: Interactive Telegram Bot - Control sync operations via Telegram commands
+- **NEW**: Bot Commands - `/sync`, `/status`, `/list`, `/logs`, `/stop` for remote control
+- **NEW**: Authorization System - Restrict bot access to authorized users only
+- **NEW**: Systemd Integration - Auto-start bot service with system boot
+- **NEW**: Clickable Database Names - Tap to copy database names in `/list` command
+- **IMPROVED**: Telegram Notifications - Reduced notification spam, only essential messages
+- **IMPROVED**: Documentation - Added TELEGRAM_BOT_SETUP.md and QUICKSTART_TELEGRAM.md
+- **FIXED**: Sensitive data cleanup - All examples use placeholder credentials
+- Enhanced security with user authorization and auto-delete sensitive messages
+- Real-time sync status monitoring from Telegram
+- Log viewing capability directly from Telegram bot
 
 ### Version 2.2.0 (2025-10-17)
 - **NEW**: Health Checks - Database monitoring (connection, disk, replication, queries, locks, bloat)
