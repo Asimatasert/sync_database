@@ -46,7 +46,7 @@ bash sync_database \
   --source-host 'localhost' \
   --source-port 5432 \
   --source-user 'postgres' \
-  --source-password 'mypassword' \
+  --source-password 'your_password' \
   --remote-user 'sshuser' \
   --remote-ip '192.168.1.100' \
   --remote-port 22
@@ -61,7 +61,7 @@ bash sync_database \
   --source-host 'localhost' \
   --source-port 5432 \
   --source-user 'postgres' \
-  --source-password 'remote_password' \
+  --source-password 'your_source_password' \
   --remote-user 'sshuser' \
   --remote-ip '192.168.1.100' \
   --remote-port 22 \
@@ -70,7 +70,7 @@ bash sync_database \
   --dest-host 'localhost' \
   --dest-port 5432 \
   --dest-user 'postgres' \
-  --dest-password 'local_password'
+  --dest-password 'your_dest_password'
 ```
 
 ### Example 3: With Excluded Tables
@@ -82,7 +82,7 @@ bash sync_database \
   --source-host 'localhost' \
   --source-port 5432 \
   --source-user 'postgres' \
-  --source-password 'remote_password' \
+  --source-password 'your_source_password' \
   --remote-user 'sshuser' \
   --remote-ip '192.168.1.100' \
   --remote-port 22 \
@@ -91,7 +91,7 @@ bash sync_database \
   --dest-host 'localhost' \
   --dest-port 5432 \
   --dest-user 'postgres' \
-  --dest-password 'local_password' \
+  --dest-password 'your_dest_password' \
   --exclude "logs,sessions,temp_data"
 ```
 
@@ -107,8 +107,8 @@ bash sync_database \
     "log_file": "./data/dumps/sync.log",
     "telegram": {
       "enabled": true,
-      "bot_token": "123456789:ABCdefGHIjklMNOpqrsTUVwxyz",
-      "chat_id": "-1001234567890"
+      "bot_token": "YOUR_TELEGRAM_BOT_TOKEN",
+      "chat_id": "YOUR_TELEGRAM_CHAT_ID"
     },
     "health_checks": {
       "enabled": true,
@@ -143,7 +143,7 @@ bash sync_database \
         "host": "localhost",
         "port": 5432,
         "user": "postgres",
-        "password": "SecurePass123!"
+        "password": "your_source_password"
       },
       "remote": {
         "ssh_user": "sshuser",
@@ -155,7 +155,7 @@ bash sync_database \
         "host": "localhost",
         "port": 5432,
         "user": "postgres",
-        "password": "LocalPass456",
+        "password": "your_dest_password",
         "restore": true
       },
       "options": {
@@ -177,7 +177,7 @@ bash sync_database \
         "host": "localhost",
         "port": 5432,
         "user": "postgres",
-        "password": "StagePass789"
+        "password": "your_source_password"
       },
       "remote": {
         "ssh_user": "sshuser",
@@ -189,7 +189,7 @@ bash sync_database \
         "host": "localhost",
         "port": 5432,
         "user": "postgres",
-        "password": "LocalPass456",
+        "password": "your_dest_password",
         "restore": true
       },
       "options": {
@@ -257,32 +257,32 @@ bash sync_database_runner /path/to/custom_config.json
 
 #### Every 10 Minutes - Production Database
 ```bash
-*/10 * * * * /bin/bash /home/dbuser/sync_database --database 'proddb' --source-host 'localhost' --source-port 5432 --source-user 'postgres' --source-password 'SecurePass123!' --remote-user 'sshuser' --remote-ip '10.0.1.100' --remote-port 22 --restore --dest-database 'proddb' --dest-host 'localhost' --dest-port 5432 --dest-user 'postgres' --dest-password 'LocalPass456' --exclude "audit.logged_actions,public.sessions,public.logs,public.temp_data" --compression gzip --compression-level 6 --pg-compression 6 >> /var/log/sync_database_prod.log 2>&1
+*/10 * * * * /bin/bash /home/dbuser/sync_database --database 'proddb' --source-host 'localhost' --source-port 5432 --source-user 'postgres' --source-password 'your_source_password' --remote-user 'sshuser' --remote-ip '10.0.1.100' --remote-port 22 --restore --dest-database 'proddb' --dest-host 'localhost' --dest-port 5432 --dest-user 'postgres' --dest-password 'your_dest_password' --exclude "audit.logged_actions,public.sessions,public.logs,public.temp_data" --compression gzip --compression-level 6 --pg-compression 6 >> /var/log/sync_database_prod.log 2>&1
 ```
 
 #### Every 10 Minutes - Staging Database
 ```bash
-*/10 * * * * /bin/bash /home/dbuser/sync_database --database 'stagingdb' --source-host 'localhost' --source-port 5432 --source-user 'postgres' --source-password 'StagePass789' --remote-user 'sshuser' --remote-ip 'staging.example.com' --remote-port 22 --restore --dest-database 'stagingdb' --dest-host 'localhost' --dest-port 5432 --dest-user 'postgres' --dest-password 'LocalPass456' --exclude "audit.logged_actions" --compression gzip --compression-level 6 --pg-compression 6 >> /var/log/sync_database_staging.log 2>&1
+*/10 * * * * /bin/bash /home/dbuser/sync_database --database 'stagingdb' --source-host 'localhost' --source-port 5432 --source-user 'postgres' --source-password 'your_source_password' --remote-user 'sshuser' --remote-ip 'staging.example.com' --remote-port 22 --restore --dest-database 'stagingdb' --dest-host 'localhost' --dest-port 5432 --dest-user 'postgres' --dest-password 'your_dest_password' --exclude "audit.logged_actions" --compression gzip --compression-level 6 --pg-compression 6 >> /var/log/sync_database_staging.log 2>&1
 ```
 
 #### Every Hour at Minute 0
 ```bash
-0 * * * * /bin/bash /home/dbuser/sync_database --database 'mydb' --source-password 'MySecurePass' --remote-ip '192.168.1.100' >> /var/log/sync_database.log 2>&1
+0 * * * * /bin/bash /home/dbuser/sync_database --database 'mydb' --source-password 'your_password' --remote-ip '192.168.1.100' >> /var/log/sync_database.log 2>&1
 ```
 
 #### Every Day at 2 AM
 ```bash
-0 2 * * * /bin/bash /home/dbuser/sync_database --database 'mydb' --source-password 'MySecurePass' --remote-ip '192.168.1.100' >> /var/log/sync_database.log 2>&1
+0 2 * * * /bin/bash /home/dbuser/sync_database --database 'mydb' --source-password 'your_password' --remote-ip '192.168.1.100' >> /var/log/sync_database.log 2>&1
 ```
 
 #### Every 6 Hours
 ```bash
-0 */6 * * * /bin/bash /home/dbuser/sync_database --database 'mydb' --source-password 'MySecurePass' --remote-ip '192.168.1.100' >> /var/log/sync_database.log 2>&1
+0 */6 * * * /bin/bash /home/dbuser/sync_database --database 'mydb' --source-password 'your_password' --remote-ip '192.168.1.100' >> /var/log/sync_database.log 2>&1
 ```
 
 #### Every Sunday at 3 AM
 ```bash
-0 3 * * 0 /bin/bash /home/dbuser/sync_database --database 'mydb' --source-password 'MySecurePass' --remote-ip '192.168.1.100' >> /var/log/sync_database.log 2>&1
+0 3 * * 0 /bin/bash /home/dbuser/sync_database --database 'mydb' --source-password 'your_password' --remote-ip '192.168.1.100' >> /var/log/sync_database.log 2>&1
 ```
 
 ---
@@ -296,13 +296,13 @@ Clone a database on localhost without SSH:
 # Same cluster - credentials auto-inherited
 bash sync_database --local-clone \
   --database 'production' \
-  --source-password 'prod_pass' \
+  --source-password 'your_password' \
   --dest-database 'production_backup'
 
 # Different clusters - explicit credentials
 bash sync_database --local-clone \
-  --database 'mydb' --source-port 5432 --source-password 'pass1' \
-  --dest-database 'mydb_copy' --dest-port 5433 --dest-password 'pass2'
+  --database 'mydb' --source-port 5432 --source-password 'your_source_password' \
+  --dest-database 'mydb_copy' --dest-port 5433 --dest-password 'your_dest_password'
 ```
 
 ### With Keep Dumps (Keep Last 5 Dumps)
@@ -435,10 +435,10 @@ Production-grade sync with all v2.2.0 features:
 ```bash
 bash sync_database \
   --database 'critical_db' \
-  --source-password 'prod_pass' \
+  --source-password 'your_password' \
   --remote-ip '192.168.1.100' \
   --restore \
-  --dest-password 'local_pass' \
+  --dest-password 'your_password' \
   --exclude "audit_logs,sessions" \
   --compression gzip \
   --compression-level 9 \
@@ -489,7 +489,7 @@ bash sync_database \
 
 3. **Testing**: Test your command manually before adding to crontab:
    ```bash
-   bash /home/ustek/sync_database --database 'test' ...
+   bash /home/YOUR_USERNAME/sync_database --database 'test' ...
    ```
 
 4. **View Crontab**:

@@ -1,0 +1,23 @@
+[Unit]
+Description=Telegram Bot Database Sync Service
+After=network.target
+
+[Service]
+Type=simple
+User=YOUR_USERNAME
+WorkingDirectory=/home/YOUR_USERNAME
+ExecStart=/bin/bash /home/YOUR_USERNAME/telegram_bot_service /home/YOUR_USERNAME/sync_database.json
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+# Environment
+Environment="PATH=/usr/local/bin:/usr/bin:/bin"
+
+# Security
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
