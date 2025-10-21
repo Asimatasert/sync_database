@@ -57,8 +57,8 @@ log_message() {
     echo "[$timestamp] [$level] $message" >> "$LOG_FILE"
 }
 
-# Function to send Telegram notification
-send_telegram() {
+# Function to send Telegram notification (summary only)
+send_telegram_summary() {
     local message="$1"
     local telegram_enabled=$(jq -r '.global_options.telegram.enabled // false' "$CONFIG_FILE")
     local bot_token=$(jq -r '.global_options.telegram.bot_token // ""' "$CONFIG_FILE")
@@ -66,18 +66,19 @@ send_telegram() {
 
     if [ "$telegram_enabled" = "true" ] && [ -n "$bot_token" ] && [ -n "$chat_id" ]; then
         local api_url="https://api.telegram.org/bot${bot_token}/sendMessage"
-        local response=$(curl -s -X POST "$api_url" \
+        curl -s -X POST "$api_url" \
             -d "chat_id=${chat_id}" \
             -d "text=${message}" \
-            -d "parse_mode=HTML" 2>&1)
+            -d "parse_mode=HTML" > /dev/null 2>&1
 
         if [ $? -eq 0 ]; then
-            log_message "INFO" "Telegram notification sent successfully"
+            log_message "INFO" "Telegram summary sent successfully"
         else
-            log_message "ERROR" "Failed to send Telegram notification: $response"
+            log_message "ERROR" "Failed to send Telegram summary"
         fi
     fi
 }
+
 
 # Function to run sync for a single database
 sync_database() {
@@ -129,6 +130,7 @@ sync_database() {
     # Extract options
     local exclude_tables=$(echo "$db_config" | jq -r '.options.exclude_tables // [] | join(",")')
     local exclude_schemas=$(echo "$db_config" | jq -r '.options.exclude_schemas // [] | join(",")')
+    local exclude_table_data=$(echo "$db_config" | jq -r '.options.exclude_table_data // [] | join(",")')
 
     # Extract compression options
     local compression_enabled=$(echo "$db_config" | jq -r '.options.compression.enabled // true')
@@ -226,6 +228,10 @@ sync_database() {
         cmd="$cmd --exclude-schema \"$exclude_schemas\""
     fi
 
+    if [ -n "$exclude_table_data" ]; then
+        cmd="$cmd --exclude-table-data \"$exclude_table_data\""
+    fi
+
     # Add compression options
     if [ "$compression_enabled" = "false" ]; then
         cmd="$cmd --compression none"
@@ -310,7 +316,9 @@ sync_database() {
 
         echo -e "${GREEN}✓ Success: $name${NC}"
         log_message "SUCCESS" "Completed sync for: $name (Duration: $duration_formatted, Size: $dump_size)"
-        send_telegram "✅ <b>Database Sync Success</b>%0A%0ADatabase: <code>$name</code>%0AStatus: Completed successfully%0A%0AStart: $start_date%0AEnd: $end_date%0ADuration: $duration_formatted%0ASize: $dump_size"
+
+        # Store results for summary
+        echo "$name|success|$duration_formatted|$dump_size" >> /tmp/sync_results_$$.txt
         return 0
     else
         # Calculate duration even on failure
@@ -324,7 +332,9 @@ sync_database() {
 
         echo -e "${RED}✗ Failed: $name${NC}"
         log_message "ERROR" "Failed sync for: $name (Duration: $duration_formatted)"
-        send_telegram "❌ <b>Database Sync Failed</b>%0A%0ADatabase: <code>$name</code>%0AStatus: Failed%0A%0AStart: $start_date%0AEnd: $end_date%0ADuration: $duration_formatted"
+
+        # Store results for summary
+        echo "$name|failed|$duration_formatted|N/A" >> /tmp/sync_results_$$.txt
         return 1
     fi
 }
@@ -339,6 +349,13 @@ echo "Log file: $LOG_FILE"
 echo ""
 
 log_message "INFO" "===== Sync Runner Started ====="
+
+# Clean up old results file and create new one
+rm -f /tmp/sync_results_$$.txt
+touch /tmp/sync_results_$$.txt
+
+# Record start time for summary
+RUNNER_START_TIME=$(date +%s)
 
 # Get total number of databases
 TOTAL_DBS=$(jq '.databases | length' "$CONFIG_FILE")
@@ -371,6 +388,17 @@ for i in $(seq 0 $(($TOTAL_DBS - 1))); do
     echo ""
 done
 
+# Calculate total runtime
+RUNNER_END_TIME=$(date +%s)
+RUNNER_DURATION=$((RUNNER_END_TIME - RUNNER_START_TIME))
+RUNNER_HOURS=$((RUNNER_DURATION / 3600))
+RUNNER_MINUTES=$(((RUNNER_DURATION % 3600) / 60))
+RUNNER_SECONDS=$((RUNNER_DURATION % 60))
+RUNNER_DURATION_FORMATTED=$(printf "%02d:%02d:%02d" $RUNNER_HOURS $RUNNER_MINUTES $RUNNER_SECONDS)
+
+# Get disk usage information
+DISK_INFO=$(df -h / | tail -n 1 | awk '{print "Used: "$3" / "$2" ("$5")"}')
+
 # Summary
 echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 echo -e "${BLUE}║          Summary                        ║${NC}"
@@ -379,20 +407,47 @@ echo -e "Total databases: $TOTAL_DBS"
 echo -e "${GREEN}✓ Successful: $SUCCESS_COUNT${NC}"
 echo -e "${RED}✗ Failed: $FAILED_COUNT${NC}"
 echo -e "${YELLOW}⊝ Skipped: $SKIPPED_COUNT${NC}"
+echo -e "⏱ Total Time: $RUNNER_DURATION_FORMATTED"
+echo -e "💾 Disk: $DISK_INFO"
 echo ""
 
-log_message "INFO" "===== Sync Runner Completed ====="
-log_message "INFO" "Summary - Total: $TOTAL_DBS, Success: $SUCCESS_COUNT, Failed: $FAILED_COUNT, Skipped: $SKIPPED_COUNT"
-
-# Get disk usage information
-DISK_INFO=$(df -h / | tail -n 1 | awk '{print "Used: "$3" / "$2" ("$5")"}')
-
-# Send summary notification to Telegram
-if [ $FAILED_COUNT -gt 0 ]; then
-    send_telegram "📊 <b>Database Sync Summary</b>%0A%0ATotal: $TOTAL_DBS%0A✅ Success: $SUCCESS_COUNT%0A❌ Failed: $FAILED_COUNT%0A⊝ Skipped: $SKIPPED_COUNT%0A%0A⚠️ <b>Some syncs failed!</b>%0ATime: $(date '+%Y-%m-%d %H:%M:%S')%0A%0A💾 Disk: $DISK_INFO"
-else
-    send_telegram "📊 <b>Database Sync Summary</b>%0A%0ATotal: $TOTAL_DBS%0A✅ Success: $SUCCESS_COUNT%0A❌ Failed: $FAILED_COUNT%0A⊝ Skipped: $SKIPPED_COUNT%0A%0A✅ <b>All syncs completed successfully!</b>%0ATime: $(date '+%Y-%m-%d %H:%M:%S')%0A%0A💾 Disk: $DISK_INFO"
+# Show detailed results
+if [ -f /tmp/sync_results_$$.txt ]; then
+    echo -e "${BLUE}Detailed Results:${NC}"
+    while IFS='|' read -r db_name status duration size; do
+        if [ "$status" = "success" ]; then
+            echo -e "${GREEN}✓${NC} $db_name - Time: $duration, Size: $size"
+        else
+            echo -e "${RED}✗${NC} $db_name - Time: $duration"
+        fi
+    done < /tmp/sync_results_$$.txt
+    echo ""
 fi
+
+log_message "INFO" "===== Sync Runner Completed ====="
+log_message "INFO" "Summary - Total: $TOTAL_DBS, Success: $SUCCESS_COUNT, Failed: $FAILED_COUNT, Skipped: $SKIPPED_COUNT, Duration: $RUNNER_DURATION_FORMATTED"
+
+# Build detailed summary for Telegram
+TELEGRAM_SUMMARY=""
+if [ -f /tmp/sync_results_$$.txt ]; then
+    while IFS='|' read -r db_name status duration size; do
+        if [ "$status" = "success" ]; then
+            TELEGRAM_SUMMARY="${TELEGRAM_SUMMARY}✅ <code>$db_name</code>%0A   ⏱ $duration | 💾 $size%0A%0A"
+        else
+            TELEGRAM_SUMMARY="${TELEGRAM_SUMMARY}❌ <code>$db_name</code>%0A   ⏱ $duration%0A%0A"
+        fi
+    done < /tmp/sync_results_$$.txt
+fi
+
+# Send Telegram summary
+if [ $FAILED_COUNT -gt 0 ]; then
+    send_telegram_summary "📊 <b>Database Sync Summary</b>%0A%0A📈 <b>Statistics:</b>%0ATotal: $TOTAL_DBS%0A✅ Success: $SUCCESS_COUNT%0A❌ Failed: $FAILED_COUNT%0A⊝ Skipped: $SKIPPED_COUNT%0A%0A⏱ <b>Total Time:</b> $RUNNER_DURATION_FORMATTED%0A💾 <b>Disk:</b> $DISK_INFO%0A%0A━━━━━━━━━━━━━━━━━━━━%0A${TELEGRAM_SUMMARY}⚠️ <b>Some syncs failed!</b>%0A🕐 $(date '+%Y-%m-%d %H:%M:%S')"
+else
+    send_telegram_summary "📊 <b>Database Sync Summary</b>%0A%0A📈 <b>Statistics:</b>%0ATotal: $TOTAL_DBS%0A✅ Success: $SUCCESS_COUNT%0A❌ Failed: $FAILED_COUNT%0A⊝ Skipped: $SKIPPED_COUNT%0A%0A⏱ <b>Total Time:</b> $RUNNER_DURATION_FORMATTED%0A💾 <b>Disk:</b> $DISK_INFO%0A%0A━━━━━━━━━━━━━━━━━━━━%0A${TELEGRAM_SUMMARY}✅ <b>All syncs completed!</b>%0A🕐 $(date '+%Y-%m-%d %H:%M:%S')"
+fi
+
+# Cleanup temporary results file
+rm -f /tmp/sync_results_$$.txt
 
 # Exit with error if any failed
 if [ $FAILED_COUNT -gt 0 ]; then

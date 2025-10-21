@@ -74,6 +74,7 @@
       "options": {
         "exclude_tables": [],
         "exclude_schemas": [],
+        "exclude_table_data": [],
         "compression": {
           "enabled": true,
           "type": "gzip",
@@ -124,6 +125,7 @@
       "options": {
         "exclude_tables": ["audit_logs", "sessions"],
         "exclude_schemas": ["temp", "staging"],
+        "exclude_table_data": ["users", "customers", "orders"],
         "compression": {
           "enabled": true,
           "type": "gzip",
@@ -169,6 +171,7 @@
       "options": {
         "exclude_tables": [],
         "exclude_schemas": [],
+        "exclude_table_data": ["payment_methods", "credit_cards", "api_tokens"],
         "compression": {
           "enabled": true,
           "type": "gzip",
@@ -209,6 +212,7 @@
         "port": 5432
       },
       "options": {
+        "exclude_table_data": [],
         "compression": {
           "enabled": true,
           "type": "gzip",

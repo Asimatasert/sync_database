@@ -47,6 +47,7 @@ fi
 DATABASE="your_database_name"
 EXCLUDE_TABLES=""
 EXCLUDE_SCHEMAS=""
+EXCLUDE_TABLE_DATA=""
 AUTO_RESTORE=false
 KEEP_DUMPS=-1  # -1 means keep all dumps, 0 means keep none, N means keep last N dumps
 LOCAL_CLONE=false  # Clone database on localhost without SSH
@@ -230,6 +231,10 @@ while [[ $# -gt 0 ]]; do
             EXCLUDE_SCHEMAS="$2"
             shift 2
             ;;
+        --exclude-table-data)
+            EXCLUDE_TABLE_DATA="$2"
+            shift 2
+            ;;
         --remote-user)
             REMOTE_USER="$2"
             shift 2
@@ -384,8 +389,9 @@ while [[ $# -gt 0 ]]; do
             echo ""
             echo "Options:"
             echo "  --database NAME            Source database name (default: your_database_name)"
-            echo "  --exclude TABLES           Comma-separated list of tables to exclude"
+            echo "  --exclude TABLES           Comma-separated list of tables to exclude (structure + data)"
             echo "  --exclude-schema SCHEMAS   Comma-separated list of schemas to exclude"
+            echo "  --exclude-table-data TABLES  Comma-separated list of tables to exclude data only (keeps structure)"
             echo ""
             echo "Mode Options:"
             echo "  --local-clone              Clone database on localhost (no SSH needed)"
@@ -598,10 +604,13 @@ if [ "$AUTO_RESTORE" = true ]; then
     echo "Destination DB: ${DEST_DB_HOST}:${DEST_DB_PORT} (user: ${DEST_DB_USER})"
 fi
 if [ -n "$EXCLUDE_TABLES" ]; then
-    echo "Excluding tables: $EXCLUDE_TABLES"
+    echo "Excluding tables (structure + data): $EXCLUDE_TABLES"
 fi
 if [ -n "$EXCLUDE_SCHEMAS" ]; then
     echo "Excluding schemas: $EXCLUDE_SCHEMAS"
+fi
+if [ -n "$EXCLUDE_TABLE_DATA" ]; then
+    echo "Excluding table data only (keeping structure): $EXCLUDE_TABLE_DATA"
 fi
 if [ "$COMPRESSION_ENABLED" = true ] && [ "$LOCAL_CLONE" = false ]; then
     echo "Compression: ${COMPRESSION_TYPE} (level: ${COMPRESSION_LEVEL}, pg_dump: ${PG_DUMP_COMPRESSION})"
@@ -649,6 +658,16 @@ if [ -n "$EXCLUDE_SCHEMAS" ]; then
         # Trim whitespace
         schema=$(echo "$schema" | xargs)
         PG_DUMP_CMD="$PG_DUMP_CMD --exclude-schema='$schema'"
+    done
+fi
+
+# Add exclude-table-data options (keeps table structure but excludes data)
+if [ -n "$EXCLUDE_TABLE_DATA" ]; then
+    IFS=',' read -ra TABLES_DATA <<< "$EXCLUDE_TABLE_DATA"
+    for table in "${TABLES_DATA[@]}"; do
+        # Trim whitespace
+        table=$(echo "$table" | xargs)
+        PG_DUMP_CMD="$PG_DUMP_CMD --exclude-table-data='$table'"
     done
 fi
 

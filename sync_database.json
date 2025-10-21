@@ -1,5 +1,126 @@
 {
   "databases": [
+    {
+      "name": "E-Commerce Production to Dev",
+      "enabled": true,
+      "source": {
+        "database": "ecommerce_prod",
+        "host": "localhost",
+        "port": 5432,
+        "user": "postgres",
+        "password": "MySecurePass123!"
+      },
+      "destination": {
+        "database": "ecommerce_dev",
+        "host": "localhost",
+        "port": 5432,
+        "user": "postgres",
+        "password": "DevPass456",
+        "restore": true
+      },
+      "options": {
+        "exclude_tables": ["logs", "sessions", "cache"],
+        "exclude_table_data": ["users", "customers", "orders", "payments", "credit_cards", "addresses", "invoices"],
+        "compression": {
+          "enabled": true,
+          "type": "gzip",
+          "level": 6,
+          "pg_dump_level": 6
+        },
+        "keep_dumps": 3
+      },
+      "mode": {
+        "local_clone": true
+      }
+    },
+    {
+      "name": "SaaS Main DB - Full Backup",
+      "enabled": false,
+      "source": {
+        "database": "saas_main",
+        "host": "10.0.1.50",
+        "port": 5432,
+        "user": "postgres",
+        "password": "ProdPass2024!"
+      },
+      "destination": {
+        "database": "saas_main_backup",
+        "host": "localhost",
+        "port": 5432,
+        "user": "postgres",
+        "password": "BackupPass2024",
+        "restore": true
+      },
+      "remote": {
+        "ssh_user": "ubuntu",
+        "ssh_host": "10.0.1.50",
+        "ssh_port": 22
+      },
+      "options": {
+        "exclude_tables": [],
+        "exclude_table_data": [],
+        "compression": {
+          "enabled": true,
+          "type": "xz",
+          "level": 9,
+          "pg_dump_level": 9
+        },
+        "keep_dumps": 7
+      },
+      "mode": {
+        "local_clone": false
+      }
+    },
+    {
+      "name": "SaaS Main DB - Dev Clone (No User Data)",
+      "enabled": false,
+      "source": {
+        "database": "saas_main",
+        "host": "10.0.1.50",
+        "port": 5432,
+        "user": "postgres",
+        "password": "ProdPass2024!"
+      },
+      "destination": {
+        "database": "saas_dev",
+        "host": "localhost",
+        "port": 5433,
+        "user": "devuser",
+        "password": "DevPass123",
+        "restore": true
+      },
+      "remote": {
+        "ssh_user": "ubuntu",
+        "ssh_host": "10.0.1.50",
+        "ssh_port": 22
+      },
+      "options": {
+        "exclude_tables": ["logs", "sessions", "audit_logs", "login_history"],
+        "exclude_schemas": ["analytics"],
+        "exclude_table_data": [
+          "users",
+          "user_profiles",
+          "organizations",
+          "subscriptions",
+          "billing_info",
+          "invoices",
+          "payment_methods",
+          "transactions",
+          "api_keys",
+          "webhooks"
+        ],
+        "compression": {
+          "enabled": true,
+          "type": "gzip",
+          "level": 6,
+          "pg_dump_level": 6
+        },
+        "keep_dumps": 2
+      },
+      "mode": {
+        "local_clone": false
+      }
+    }
   ],
   "global_options": {
     "log_file": "./data/dumps/sync.log",
